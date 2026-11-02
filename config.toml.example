@@ -1,0 +1,14 @@
+# print-my-mail 本地配置
+
+[server]
+# gRPC 打印服务器地址
+target = "127.0.0.1:54321"
+
+# 监听一个IMAP邮箱
+[[mail]]
+user = "your_email@gmail.com"
+pass = "your_app_password"
+
+# 监听一个GitHub账户
+[[github]]
+pat = "xxxx"
