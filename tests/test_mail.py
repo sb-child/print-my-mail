@@ -89,6 +89,46 @@ def test_recipient_uses_to_header() -> None:
     assert item.recipient == "Alice <alice@example.com>"
 
 
+def test_recipient_duplicate_address_is_merged() -> None:
+    raw = b'To: "xxx@gmail.com" <xxx@gmail.com>\n\nbody'
+    item = _parse_message("login@example.com", raw)
+    assert item.recipient == "xxx@gmail.com"
+
+
+def test_recipient_unquoted_duplicate_is_merged() -> None:
+    raw = b"To: xxx@gmail.com <xxx@gmail.com>\n\nbody"
+    item = _parse_message("login@example.com", raw)
+    assert item.recipient == "xxx@gmail.com"
+
+
+def test_recipient_keeps_real_display_names() -> None:
+    raw = (
+        b'To: Alice <alice@example.com>, "Bob, Jr." <bob@example.com>\n\n'
+        b"body"
+    )
+    item = _parse_message("login@example.com", raw)
+    assert item.recipient == (
+        'Alice <alice@example.com>, "Bob, Jr." <bob@example.com>'
+    )
+
+
+def test_recipient_chinese_display_name_is_not_rfc2047_encoded() -> None:
+    raw = (
+        b"To: "
+        + _encoded_word("张三", "utf-8", "utf-8")
+        + b" <zhang@example.com>\n\nbody"
+    )
+    item = _parse_message("login@example.com", raw)
+    assert item.recipient == "张三 <zhang@example.com>"
+
+
+def test_sender_duplicate_address_name_is_merged() -> None:
+    raw = b'From: "xxx@gmail.com" <xxx@gmail.com>\n\nbody'
+    item = _parse_message("login@example.com", raw)
+    assert item.sender == "xxx@gmail.com"
+    assert item.sender_name == "xxx"
+
+
 def test_date_is_converted_to_utc8() -> None:
     message = EmailMessage()
     message["From"] = "sender@example.com"

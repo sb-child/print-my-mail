@@ -8,6 +8,7 @@
 - 附件和图片不解析；
 - 头字段和正文都从原始字节重新解码，兼容 gb2312 扩展（GBK）、
   charset 标错、无 charset 等常见情况；
+- 显示名与地址相同时只保留地址，例如 `"a@b.com" <a@b.com>` → `a@b.com`；
 - `folders` 可以配置 INBOX、Spam/Junk 等多个文件夹；
 - 启动时只处理 `max_age` 秒以内到达的邮件，更早的未读邮件跳过，
   不打印也不修改已读状态。
@@ -46,7 +47,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.header import decode_header
 from email.message import EmailMessage, MIMEPart
-from email.utils import parseaddr, parsedate_to_datetime
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
 
 from typing import cast
@@ -95,6 +96,8 @@ _UNKNOWN_CHARSETS = frozenset(
         "binary",
     }
 )
+
+_SINGLE_ADDRESS_RE = re.compile(r'"?([^"<>]*?)"?\s*<([^<>]+)>')
 
 _HTML_BLOCK_TAGS = frozenset({"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4"})
 _LIST_RE = re.compile(
@@ -450,9 +453,10 @@ def _parse_message(
         email.message_from_bytes(raw, policy=email.policy.default),
     )
     sender_name, sender = parseaddr(_header_value(message, "From"))
+    sender_name = _normalize_sender_name(sender_name, sender)
     body, html_body = _message_bodies(message)
     return MailItem(
-        recipient=_header_value(message, "To") or recipient,
+        recipient=_format_addresses(_header_value(message, "To")) or recipient,
         sender=sender or sender_name or "unknown",
         sender_name=sender_name or sender or "未知发件人",
         subject=_header_value(message, "Subject") or "(无主题)",
@@ -470,6 +474,52 @@ def _header_value(message: EmailMessage, name: str) -> str:
     if raw is None:
         return ""
     return _decode_header(raw)
+
+
+def _format_addresses(value: str) -> str:
+    """规范化地址头：显示名和地址相同时只保留地址。"""
+    if not value:
+        return ""
+
+    formatted = [
+        _format_mailbox(name, address)
+        for name, address in getaddresses([value])
+        if address
+    ]
+    if formatted:
+        return ", ".join(formatted)
+
+    # getaddresses 对未加引号的 "a@b <a@b>" 会解析失败，这里兜底。
+    match = _SINGLE_ADDRESS_RE.fullmatch(value.strip())
+    if match is not None:
+        return _format_mailbox(match.group(1), match.group(2))
+    return value.strip()
+
+
+def _format_mailbox(name: str, address: str) -> str:
+    name = name.strip().strip('"').strip()
+    address = address.strip()
+    if not address:
+        return name
+    if not name or _same_address(name, address):
+        return address
+    if any(char in name for char in ',;<>"@'):
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        name = f'"{escaped}"'
+    return f"{name} <{address}>"
+
+
+def _normalize_sender_name(name: str, address: str) -> str:
+    name = name.strip().strip('"').strip()
+    if not name:
+        return ""
+    if _same_address(name, address):
+        return address.partition("@")[0]
+    return name
+
+
+def _same_address(name: str, address: str) -> bool:
+    return bool(name) and name.strip().casefold() == address.strip().casefold()
 
 
 def _raw_header(message: EmailMessage, name: str) -> str | None:
