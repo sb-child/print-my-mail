@@ -14,6 +14,8 @@
     box(image("pr.svg", width: 8pt), baseline: 2pt)
   } else if kind == "pr-merged" {
     box(image("pr-merged.svg", width: 8pt), baseline: 2pt)
+  } else if kind == "notification" {
+    box(image("bell-dot.svg", width: 8pt), baseline: 2pt)
   } else {
     panic("unknown kind: " + kind)
   }

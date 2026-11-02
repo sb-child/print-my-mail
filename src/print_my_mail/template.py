@@ -11,8 +11,14 @@ from typing import Iterable, Literal
 _TEMPLATE_NAME = "main.typ"
 _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
-GitHubKind = Literal["issue", "closed-issue", "pr", "pr-merged"]
-_GITHUB_KINDS: tuple[GitHubKind, ...] = ("issue", "closed-issue", "pr", "pr-merged")
+GitHubKind = Literal["issue", "closed-issue", "pr", "pr-merged", "notification"]
+_GITHUB_KINDS: tuple[GitHubKind, ...] = (
+    "issue",
+    "closed-issue",
+    "pr",
+    "pr-merged",
+    "notification",
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +31,7 @@ class GitHubNotification:
     - `closed-issue`: 已关闭的 issue
     - `pr`: 打开的 PR
     - `pr-merged`: 已合并/关闭的 PR
+    - `notification`: 其他类型的 GitHub 通知
     """
 
     repo: str

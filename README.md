@@ -5,10 +5,10 @@
 ## 运行我
 
 ```bash
-# 正式入口
+# 按 config.toml 持续监听邮箱和 GitHub 通知
 uv run print-my-mail
 
-# 运行当前的示例逻辑
+# 打印一封示例邮件和示例 GitHub 通知
 uv run print-my-mail test
 ```
 
@@ -36,6 +36,45 @@ for account in config.github:
 ```
 
 `load_config()` 会先在当前工作目录、再到项目根目录查找 `config.toml`；找不到时使用默认值。也可以传入路径：`load_config("path/to/config.toml")`。
+
+`[[mail]]` 默认使用 `imap.<邮箱域名>` 作为服务器，Gmail、Outlook 等常见邮箱会自动使用对应的地址；也可以显式指定：
+
+```toml
+[[mail]]
+user = "your_email@gmail.com"
+pass = "your_app_password"
+host = "imap.gmail.com"
+port = 993
+```
+
+## 工作方式
+
+`uv run print-my-mail` 会：
+
+1. 每 60 秒（可通过 `[server] poll_interval` 调整）轮询配置里的所有 IMAP 邮箱和 GitHub 账户；
+2. 打印邮箱中的未读邮件；
+3. 把 GitHub 的未读通知合并成一张小票打印；
+4. 打印任务成功提交后，才把邮件标记为已读、把 GitHub 通知标记为已读。
+
+打印前的内容处理通过 `PostProcessor` 预留：
+
+```python
+from print_my_mail import Runner, TransparentPostProcessor, load_config
+
+
+class MyProcessor(TransparentPostProcessor):
+    def mail(self, item):
+        # 这里以后可以接 AI 总结
+        return item
+
+    def github(self, digest):
+        return digest
+
+
+Runner(load_config(), processor=MyProcessor()).run_forever()
+```
+
+默认的 `TransparentPostProcessor` 原样返回内容，不做任何改写。
 
 ## 重新生成 gRPC 代码
 

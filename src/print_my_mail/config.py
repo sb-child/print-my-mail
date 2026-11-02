@@ -11,6 +11,19 @@ from .client import DEFAULT_TARGET
 
 CONFIG_NAME = "config.toml"
 
+_IMAP_HOSTS = {
+    "gmail.com": "imap.gmail.com",
+    "googlemail.com": "imap.gmail.com",
+    "outlook.com": "imap-mail.outlook.com",
+    "hotmail.com": "imap-mail.outlook.com",
+    "live.com": "imap-mail.outlook.com",
+    "qq.com": "imap.qq.com",
+    "163.com": "imap.163.com",
+    "126.com": "imap.126.com",
+    "yahoo.com": "imap.mail.yahoo.com",
+    "icloud.com": "imap.mail.me.com",
+}
+
 
 @dataclass(frozen=True)
 class MailAccount:
@@ -18,6 +31,8 @@ class MailAccount:
 
     user: str
     password: str
+    host: str
+    port: int = 993
 
 
 @dataclass(frozen=True)
@@ -32,6 +47,7 @@ class Config:
     """`config.toml` 中与程序相关的配置项。"""
 
     target: str = DEFAULT_TARGET
+    poll_interval: float = 60.0
     mail: tuple[MailAccount, ...] = ()
     github: tuple[GitHubAccount, ...] = ()
 
@@ -54,10 +70,7 @@ def load_config(path: str | Path | None = None) -> Config:
     server = _table(data, "server")
 
     mail = tuple(
-        MailAccount(
-            user=_require_str(item, "user", f"[[mail]] 第 {index} 项"),
-            password=_require_str(item, "pass", f"[[mail]] 第 {index} 项"),
-        )
+        _mail_account(item, index)
         for index, item in enumerate(_array_of_tables(data, "mail"), start=1)
     )
     github = tuple(
@@ -69,6 +82,7 @@ def load_config(path: str | Path | None = None) -> Config:
 
     return Config(
         target=_get_str(server, "target", DEFAULT_TARGET),
+        poll_interval=_get_float(server, "poll_interval", 60.0),
         mail=mail,
         github=github,
     )
@@ -131,8 +145,43 @@ def _get_str(data: dict[str, Any], key: str, default: str) -> str:
     return value
 
 
+def _get_int(data: dict[str, Any], key: str, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"配置项 {key} 必须是整数")
+    return value
+
+
+def _get_float(data: dict[str, Any], key: str, default: float) -> float:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"配置项 {key} 必须是数字")
+    return float(value)
+
+
 def _require_str(data: dict[str, Any], key: str, context: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value:
         raise ValueError(f"{context} 的 {key} 必须是非空字符串")
     return value
+
+
+def _mail_account(item: dict[str, Any], index: int) -> MailAccount:
+    context = f"[[mail]] 第 {index} 项"
+    user = _require_str(item, "user", context)
+    return MailAccount(
+        user=user,
+        password=_require_str(item, "pass", context),
+        host=_get_str(item, "host", _default_imap_host(user)),
+        port=_get_int(item, "port", 993),
+    )
+
+
+def _default_imap_host(user: str) -> str:
+    domain = user.rpartition("@")[2].lower()
+    if not domain:
+        raise ValueError(f"无法从邮箱地址推断 IMAP 服务器: {user}")
+    if domain in _IMAP_HOSTS:
+        return _IMAP_HOSTS[domain]
+    return f"imap.{domain}"
+
