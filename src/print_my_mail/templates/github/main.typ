@@ -19,7 +19,7 @@
   } else if kind == "release" {
     box(image("tag.svg", width: 8pt), baseline: 2pt)
   } else if kind == "commit" {
-    box(image("bell-dot.svg", width: 8pt), baseline: 2pt)
+    box(image("commit.svg", width: 8pt), baseline: 2pt)
   } else if kind == "notification" {
     box(image("bell-dot.svg", width: 8pt), baseline: 2pt)
   } else {

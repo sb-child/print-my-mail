@@ -1,4 +1,7 @@
-"""无法处理的通知死信记录。"""
+"""无法处理的通知死信记录。
+
+每条 JSONL 包含：time（UTC+8）、kind、account、item、reason、details。
+"""
 
 from __future__ import annotations
 
@@ -6,6 +9,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from typing import Any
 
 from .timeutil import now
 
@@ -26,6 +30,7 @@ class DeadLetterStore:
         account: str,
         item: str,
         reason: str,
+        details: dict[str, Any] | None = None,
     ) -> None:
         entry = {
             "time": now().isoformat(timespec="seconds"),
@@ -33,6 +38,7 @@ class DeadLetterStore:
             "account": account,
             "item": item,
             "reason": reason,
+            "details": details or {},
         }
         try:
             with self._lock:

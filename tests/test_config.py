@@ -20,8 +20,12 @@ def test_load_config(tmp_path: Path) -> None:
 target = "127.0.0.1:1234"
 poll_interval = 10
 print_timeout = 30
+print_max_retries = 2
+print_retry_base_delay = 1
+print_retry_max_delay = 10
 imap_timeout = 15
 dead_letter_file = "dead.jsonl"
+github_fetch_content = false
 
 [[mail]]
 user = "a@example.com"
@@ -38,8 +42,12 @@ pat = "token"
     assert config.target == "127.0.0.1:1234"
     assert config.poll_interval == 10
     assert config.print_timeout == 30
+    assert config.print_max_retries == 2
+    assert config.print_retry_base_delay == 1
+    assert config.print_retry_max_delay == 10
     assert config.imap_timeout == 15
     assert config.dead_letter_file == "dead.jsonl"
+    assert config.github_fetch_content is False
     assert config.mail[0].user == "a@example.com"
     assert config.mail[0].folders == ("INBOX", "[Gmail]/Spam")
     assert config.github[0].pat == "token"
@@ -61,6 +69,10 @@ def test_defaults(tmp_path: Path) -> None:
         "[server]\npoll_interval = 0\n",
         "[server]\npoll_interval = nan\n",
         "[server]\nprint_timeout = -1\n",
+        "[server]\nprint_max_retries = -1\n",
+        "[server]\nprint_retry_base_delay = 0\n",
+        "[server]\nprint_retry_base_delay = 10\nprint_retry_max_delay = 5\n",
+        '[server]\ngithub_fetch_content = "yes"\n',
         "[server]\nimap_timeout = inf\n",
         '[server]\ntarget = ""\n',
         '[server]\ndead_letter_file = ""\n',

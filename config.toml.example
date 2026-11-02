@@ -7,10 +7,17 @@ target = "127.0.0.1:54321"
 poll_interval = 60
 # 等待打印任务完成的最长时间（秒）
 print_timeout = 120
+# 打印失败后的最大重试次数
+print_max_retries = 3
+# 打印失败重试的初始退避和最大退避（秒）
+print_retry_base_delay = 5
+print_retry_max_delay = 300
 # IMAP 连接和操作超时（秒）
 imap_timeout = 30
 # 永久失败通知的死信文件
 dead_letter_file = "dead-letter.jsonl"
+# 是否抓取 GitHub 通知正文和最新评论
+github_fetch_content = true
 
 # 监听一个IMAP邮箱
 [[mail]]
@@ -19,8 +26,9 @@ user = "your_email@gmail.com"
 pass = "your_app_password"
 # host = "imap.gmail.com"
 # port = 993
-# 可选，默认只监听 INBOX。Gmail 的垃圾邮件文件夹通常是 "[Gmail]/Spam"
-# folders = ["INBOX", "[Gmail]/Spam"]
+# 可选，默认只监听 INBOX。用 `uv run print-my-mail folders` 查看真实名称
+# Gmail 的垃圾邮件文件夹可能是 [Gmail]/&V4NXPpCuTvY- 这类编码
+# folders = ["INBOX"]
 
 # 监听一个GitHub账户
 [[github]]

@@ -26,6 +26,7 @@ class FakeClient:
         self.marked: list[str] = []
         self.fail_mark: set[str] = set()
         self.subjects: dict[str, GitHubSubject] = {}
+        self.poll_interval = 60.0
 
     def notifications(self) -> list[dict[str, object]]:
         return self.threads
@@ -99,7 +100,7 @@ def test_item_carries_content_for_postprocessor() -> None:
     assert item is not None
     assert item.notification.kind == "closed-issue"
     assert item.reason == "mention"
-    assert item.updated_at == "2026-11-02T10:00:00Z"
+    assert item.updated_at == "2026-11-02T18:00:00+08:00"
     assert item.body == "issue body"
     assert item.latest_comment_body == "latest comment"
 
@@ -169,6 +170,35 @@ def test_closed_pull_request_is_not_merged() -> None:
     assert item.notification.kind == "pr-closed"
 
 
+def test_fetch_content_disabled() -> None:
+    client = FakeClient([])
+    issue_url = "https://api.github.com/repos/a/b/issues/7"
+    comment_url = "https://api.github.com/repos/a/b/issues/comments/9"
+    client.subjects[issue_url] = GitHubSubject(state="closed", body="issue body")
+    client.subjects[comment_url] = GitHubSubject(body="latest comment")
+    poller = GitHubPoller(
+        GitHubAccount("pat"),
+        client=client,
+        fetch_content=False,
+    )
+    item = poller._to_item(
+        {
+            "id": "123",
+            "subject": {
+                "title": "标题",
+                "type": "Issue",
+                "url": issue_url,
+                "latest_comment_url": comment_url,
+            },
+            "repository": {"full_name": "a/b"},
+        }
+    )
+    assert item is not None
+    assert item.notification.kind == "closed-issue"
+    assert item.body == ""
+    assert item.latest_comment_body == ""
+
+
 def test_invalid_thread_is_dead_lettered_and_marked_read(tmp_path: Path) -> None:
     client = FakeClient(
         [
@@ -227,7 +257,7 @@ def test_mark_read_failure_does_not_block_others() -> None:
 class _Handler(BaseHTTPRequestHandler):
     retry_count = 0
 
-    def log_message(self, *args: object) -> None:
+    def log_message(self, format: str, *args: object) -> None:
         pass
 
     def _send(
@@ -248,7 +278,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        port = self.server.server_port
+        port = getattr(self.server, "server_port")
         if self.path.startswith("/notifications?page=2"):
             self._send(200, [{"id": "2"}])
         elif self.path.startswith("/notifications"):

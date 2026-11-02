@@ -1,4 +1,18 @@
-"""读取项目根目录的 `config.toml`。"""
+"""读取项目根目录的 `config.toml`。
+
+`[server]` 支持：
+- `target`：gRPC 打印服务器地址；
+- `poll_interval`：轮询间隔；
+- `print_timeout`：等待打印完成的最长时间；
+- `print_max_retries` / `print_retry_base_delay` / `print_retry_max_delay`：
+  打印失败后的重试策略；
+- `imap_timeout`：IMAP 超时；
+- `dead_letter_file`：死信 JSONL 路径；
+- `github_fetch_content`：是否抓取 GitHub 正文和最新评论。
+
+`[[mail]]` 支持 `user`、`pass`、`host`、`port`、`folders`。
+`[[github]]` 支持 `pat`。
+"""
 
 from __future__ import annotations
 
@@ -21,8 +35,12 @@ _SERVER_KEYS = frozenset(
         "target",
         "poll_interval",
         "print_timeout",
+        "print_max_retries",
+        "print_retry_base_delay",
+        "print_retry_max_delay",
         "imap_timeout",
         "dead_letter_file",
+        "github_fetch_content",
     }
 )
 _MAIL_KEYS = frozenset({"user", "pass", "host", "port", "folders"})
@@ -83,8 +101,12 @@ class Config:
     target: str = DEFAULT_TARGET
     poll_interval: float = 60.0
     print_timeout: float = 120.0
+    print_max_retries: int = 3
+    print_retry_base_delay: float = 5.0
+    print_retry_max_delay: float = 300.0
     imap_timeout: float = 30.0
     dead_letter_file: str = "dead-letter.jsonl"
+    github_fetch_content: bool = True
     mail: tuple[MailAccount, ...] = ()
     github: tuple[GitHubAccount, ...] = ()
 
@@ -93,9 +115,23 @@ class Config:
             raise ValueError("server.target 不能为空")
         if not self.dead_letter_file:
             raise ValueError("server.dead_letter_file 不能为空")
+        if self.print_max_retries < 0:
+            raise ValueError("server.print_max_retries 不能小于 0")
         _require_positive_finite(self.poll_interval, "server.poll_interval")
         _require_positive_finite(self.print_timeout, "server.print_timeout")
         _require_positive_finite(self.imap_timeout, "server.imap_timeout")
+        _require_positive_finite(
+            self.print_retry_base_delay,
+            "server.print_retry_base_delay",
+        )
+        _require_positive_finite(
+            self.print_retry_max_delay,
+            "server.print_retry_max_delay",
+        )
+        if self.print_retry_max_delay < self.print_retry_base_delay:
+            raise ValueError(
+                "server.print_retry_max_delay 不能小于 print_retry_base_delay"
+            )
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -139,10 +175,16 @@ def load_config(path: str | Path | None = None) -> Config:
         target=_get_str(server, "target", DEFAULT_TARGET),
         poll_interval=_get_float(server, "poll_interval", 60.0),
         print_timeout=_get_float(server, "print_timeout", 120.0),
+        print_max_retries=_get_int(server, "print_max_retries", 3),
+        print_retry_base_delay=_get_float(
+            server, "print_retry_base_delay", 5.0
+        ),
+        print_retry_max_delay=_get_float(server, "print_retry_max_delay", 300.0),
         imap_timeout=_get_float(server, "imap_timeout", 30.0),
         dead_letter_file=_get_str(
             server, "dead_letter_file", "dead-letter.jsonl"
         ),
+        github_fetch_content=_get_bool(server, "github_fetch_content", True),
         mail=mail,
         github=github,
     )
@@ -209,6 +251,13 @@ def _get_int(data: dict[str, Any], key: str, default: int) -> int:
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"配置项 {key} 必须是整数")
+    return value
+
+
+def _get_bool(data: dict[str, Any], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"配置项 {key} 必须是布尔值")
     return value
 
 

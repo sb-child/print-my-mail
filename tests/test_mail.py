@@ -100,7 +100,17 @@ def test_html_body_is_converted() -> None:
     assert "bad()" in item.html_body
 
 
-def test_mark_seen_only_after_consumer_resumes(tmp_path: Path) -> None:
+def test_empty_plain_falls_back_to_html() -> None:
+    message = EmailMessage()
+    message["From"] = "sender@example.com"
+    message["Subject"] = "html"
+    message.set_content("   ")
+    message.add_alternative("<p>HTML 正文</p>", subtype="html")
+    item = _parse_message("me@example.com", message.as_bytes())
+    assert item.body == "HTML 正文"
+
+
+def test_mark_seen_is_explicit(tmp_path: Path) -> None:
     fake = FakeIMAP(_raw())
     dead_letter = DeadLetterStore(tmp_path / "dead.jsonl")
     poller = MailPoller(
@@ -118,6 +128,7 @@ def test_mark_seen_only_after_consumer_resumes(tmp_path: Path) -> None:
         item = next(generator)
         assert item.subject == "subject"
         assert not any(event[0] == "store" for event in fake.events)
+        poller.mark_seen(item)
         with pytest.raises(StopIteration):
             next(generator)
 
@@ -163,7 +174,7 @@ def test_parse_failure_writes_dead_letter(tmp_path: Path, monkeypatch: pytest.Mo
         dead_letter=dead_letter,
     )
 
-    def fail(*args: object) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
         raise ValueError("bad mail")
 
     monkeypatch.setattr("print_my_mail.mail.imaplib.IMAP4_SSL", lambda *a, **k: fake)

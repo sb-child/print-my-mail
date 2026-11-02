@@ -17,3 +17,15 @@ def to_utc8(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC8)
     return value.astimezone(UTC8)
+
+
+def iso_to_utc8(value: str) -> str:
+    """把 ISO 8601 时间字符串转成 UTC+8；无法解析时原样返回。"""
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return to_utc8(parsed).isoformat(timespec="seconds")
+

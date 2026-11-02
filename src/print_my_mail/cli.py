@@ -65,6 +65,23 @@ def _print_folders(config: Config) -> None:
             decoded = f"  ({display})" if display != folder.name else ""
             print(f"  {folder.name}{flags}{decoded}")
 
+        suggested = [
+            folder.name
+            for folder in folders
+            if folder.name.upper() == "INBOX"
+            or "\\Junk" in folder.flags
+            or "\\Spam" in folder.flags
+        ]
+        if not suggested:
+            suggested = ["INBOX"]
+        values = ", ".join(_toml_string(name) for name in suggested)
+        print(f"  推荐配置: folders = [{values}]")
+
+
+def _toml_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
 
 def _print_test(config: Config) -> None:
     with PrintMyMailClient(config.target) as cli:

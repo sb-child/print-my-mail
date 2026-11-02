@@ -37,8 +37,7 @@ config = load_config()
 print(config.target)
 for account in config.mail:
     print(account.user)
-for account in config.github:
-    print(account.pat)
+print(f"已配置 {len(config.github)} 个 GitHub 账户")
 ```
 
 `load_config()` 会先在当前工作目录、再到项目根目录查找 `config.toml`；找不到时使用默认值。也可以传入路径：`load_config("path/to/config.toml")`。
@@ -51,10 +50,11 @@ user = "your_email@gmail.com"
 pass = "your_app_password"
 host = "imap.gmail.com"
 port = 993
-folders = ["INBOX", "[Gmail]/Spam"]
+# 用 `uv run print-my-mail folders` 查看真实名称后直接复制推荐配置
+folders = ["INBOX", "[Gmail]/&V4NXPpCuTvY-"]
 ```
 
-`folders` 默认是 `["INBOX"]`。如果想把垃圾邮件也打印出来，把服务商的 Spam/Junk 文件夹加进去。Gmail 通常是 `[Gmail]/Spam`，其他服务商可能是 `Junk`、`Junk Email` 等。不要直接监听 `All Mail`，否则归档邮件、已发送邮件会重复打印。
+`folders` 默认是 `["INBOX"]`。如果想把垃圾邮件也打印出来，把服务商的 Spam/Junk 文件夹加进去。Gmail 的垃圾邮件文件夹名是 modified UTF-7 编码（例如 `[Gmail]/&V4NXPpCuTvY-`），必须使用 `folders` 命令输出的原始名称，不能手写成 `[Gmail]/Spam`。不要直接监听 `All Mail`，否则归档邮件、已发送邮件会重复打印。
 
 IMAP 没有统一的“所有收件箱”概念，`folders` 也不会自动包含 Spam；需要按服务商的实际文件夹名显式配置。
 
@@ -71,8 +71,12 @@ IMAP 没有统一的“所有收件箱”概念，`folders` 也不会自动包�
 
 ```toml
 print_timeout = 120          # 等待打印完成的最长时间（秒）
+print_max_retries = 3        # 打印失败后的最大重试次数
+print_retry_base_delay = 5   # 指数退避的初始间隔（秒）
+print_retry_max_delay = 300  # 指数退避的最大间隔（秒）
 imap_timeout = 30            # IMAP 连接和操作超时（秒）
 dead_letter_file = "dead-letter.jsonl"  # 永久失败通知的记录文件
+github_fetch_content = true  # 是否抓取 GitHub 正文和最新评论
 ```
 
 每个邮箱和 GitHub 账户会在独立线程里轮询，打印提交仍然串行，避免互相拖慢。

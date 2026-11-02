@@ -70,6 +70,8 @@ class MailItem:
     date: datetime
     body: str
     html_body: str = ""
+    folder: str = ""
+    uid: str = ""
 
 
 class MailPoller:
@@ -87,6 +89,7 @@ class MailPoller:
         self.account = account
         self.timeout = timeout
         self._dead_letter = dead_letter
+        self._imap: imaplib.IMAP4_SSL | None = None
 
     def poll(self) -> Iterator[MailItem]:
         """
@@ -102,49 +105,57 @@ class MailPoller:
                 timeout=self.timeout,
             ) as imap:
                 imap.login(self.account.user, self.account.password)
-                for folder in self.account.folders:
-                    status, _ = imap.select(folder)
-                    if status != "OK":
-                        log.warning(
-                            "打开邮箱 %s 的文件夹 %s 失败: %s",
-                            self.account.user,
-                            folder,
-                            status,
-                        )
-                        continue
-
-                    status, data = imap.uid("search", "UNSEEN")
-                    if status != "OK":
-                        log.warning(
-                            "搜索邮箱 %s 的文件夹 %s 失败: %s",
-                            self.account.user,
-                            folder,
-                            status,
-                        )
-                        continue
-                    if not data or not isinstance(data[0], bytes):
-                        log.warning(
-                            "邮箱 %s 的文件夹 %s 返回了无效的搜索结果",
-                            self.account.user,
-                            folder,
-                        )
-                        continue
-
-                    for raw_uid in data[0].split():
-                        uid = raw_uid.decode()
-                        item = self._fetch(imap, uid)
-                        if item is None:
-                            # 无法解析的邮件写日志后标记，避免每一轮都重复失败。
-                            self._mark_seen(imap, uid)
+                self._imap = imap
+                try:
+                    for folder in self.account.folders:
+                        status, _ = imap.select(folder)
+                        if status != "OK":
+                            log.warning(
+                                "打开邮箱 %s 的文件夹 %s 失败: %s",
+                                self.account.user,
+                                folder,
+                                status,
+                            )
                             continue
-                        yield item
-                        self._mark_seen(imap, uid)
+
+                        status, data = imap.uid("search", "UNSEEN")
+                        if status != "OK":
+                            log.warning(
+                                "搜索邮箱 %s 的文件夹 %s 失败: %s",
+                                self.account.user,
+                                folder,
+                                status,
+                            )
+                            continue
+                        if not data or not isinstance(data[0], bytes):
+                            log.warning(
+                                "邮箱 %s 的文件夹 %s 返回了无效的搜索结果",
+                                self.account.user,
+                                folder,
+                            )
+                            continue
+
+                        for raw_uid in data[0].split():
+                            uid = raw_uid.decode()
+                            item = self._fetch(imap, folder, uid)
+                            if item is None:
+                                # 无法解析的邮件写日志后标记，避免每一轮都重复失败。
+                                self._mark_seen(imap, uid)
+                                continue
+                            yield item
+                finally:
+                    self._imap = None
         except MailError:
             raise
         except (imaplib.IMAP4.error, OSError) as exc:
             raise MailError(f"读取邮箱 {self.account.user} 失败: {exc}") from exc
 
-    def _fetch(self, imap: imaplib.IMAP4_SSL, uid: str) -> MailItem | None:
+    def _fetch(
+        self,
+        imap: imaplib.IMAP4_SSL,
+        folder: str,
+        uid: str,
+    ) -> MailItem | None:
         status, data = imap.uid("fetch", uid, "(RFC822)")
         if status != "OK":
             raise MailError(
@@ -154,46 +165,80 @@ class MailPoller:
         for part in data:
             if isinstance(part, tuple):
                 try:
-                    return _parse_message(self.account.user, part[1])
+                    return _parse_message(
+                        self.account.user,
+                        part[1],
+                        folder=folder,
+                        uid=uid,
+                    )
                 except Exception as exc:
                     # 解析失败是永久性错误：记录死信后标记已读，避免反复失败。
                     log.exception(
-                        "解析邮箱 %s 的邮件 UID %s 失败",
+                        "解析邮箱 %s 的文件夹 %s 的邮件 UID %s 失败",
                         self.account.user,
+                        folder,
                         uid,
                     )
                     if self._dead_letter:
                         self._dead_letter.write(
                             kind="mail",
                             account=self.account.user,
-                            item=f"UID {uid}",
+                            item=f"{folder} UID {uid}",
                             reason=f"{type(exc).__name__}: {exc}",
+                            details={
+                                "folder": folder,
+                                "uid": uid,
+                                "error_type": type(exc).__name__,
+                            },
                         )
                     return None
 
         log.warning(
-            "邮箱 %s 的邮件 UID %s 没有返回 RFC822 内容",
+            "邮箱 %s 的文件夹 %s 的邮件 UID %s 没有返回 RFC822 内容",
             self.account.user,
+            folder,
             uid,
         )
         if self._dead_letter:
             self._dead_letter.write(
                 kind="mail",
                 account=self.account.user,
-                item=f"UID {uid}",
+                item=f"{folder} UID {uid}",
                 reason="FETCH 没有返回 RFC822 内容",
+                details={"folder": folder, "uid": uid},
             )
         return None
 
+    def mark_seen(self, item: MailItem) -> None:
+        """在 poll 生成器暂停期间，把当前邮件标记为已读。"""
+        if self._imap is None:
+            log.warning(
+                "邮箱 %s 的连接已经关闭，无法标记 %s/%s 为已读",
+                self.account.user,
+                item.folder,
+                item.uid,
+            )
+            return
+        self._mark_seen(self._imap, item.uid)
+
     def _mark_seen(self, imap: imaplib.IMAP4_SSL, uid: str) -> None:
         try:
-            imap.uid("store", uid, "+FLAGS", "\\Seen")
+            status, data = imap.uid("store", uid, "+FLAGS", "\\Seen")
         except (imaplib.IMAP4.error, OSError) as exc:
             log.warning(
                 "标记邮箱 %s 的邮件 UID %s 为已读失败: %s",
                 self.account.user,
                 uid,
                 exc,
+            )
+            return
+        if status != "OK":
+            log.warning(
+                "标记邮箱 %s 的邮件 UID %s 为已读失败: %s %s",
+                self.account.user,
+                uid,
+                status,
+                data,
             )
 
 
@@ -281,7 +326,13 @@ def decode_imap_utf7(value: str) -> str:
     return "".join(result)
 
 
-def _parse_message(recipient: str, raw: bytes) -> MailItem:
+def _parse_message(
+    recipient: str,
+    raw: bytes,
+    *,
+    folder: str = "",
+    uid: str = "",
+) -> MailItem:
     message = cast(
         EmailMessage,
         email.message_from_bytes(raw, policy=email.policy.default),
@@ -296,6 +347,8 @@ def _parse_message(recipient: str, raw: bytes) -> MailItem:
         date=_parse_date(message.get("Date")),
         body=body,
         html_body=html_body,
+        folder=folder,
+        uid=uid,
     )
 
 
@@ -322,12 +375,12 @@ def _message_bodies(message: EmailMessage) -> tuple[str, str]:
     plain = _part_text(message.get_body(preferencelist=("plain",)))
     html = _part_text(message.get_body(preferencelist=("html",))) or ""
 
-    if plain is not None:
+    if plain is not None and plain.strip():
         body = plain
     elif html:
         body = _html_to_text(html)
     else:
-        body = ""
+        body = plain or ""
 
     return body.strip(), html
 

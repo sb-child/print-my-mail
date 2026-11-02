@@ -1,4 +1,9 @@
-"""把邮箱、GitHub 通知和打印机串起来的后台循环。"""
+"""把邮箱、GitHub 通知和打印机串起来的后台循环。
+
+- 每个邮箱 / GitHub 账户在独立线程中轮询；
+- 打印提交和等待结果串行执行；
+- 打印失败时按指数退避重试，超过 `print_max_retries` 后写死信。
+"""
 
 from __future__ import annotations
 
@@ -6,13 +11,15 @@ import logging
 import math
 import signal
 import threading
+import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol
 
 import grpc
 
 from .client import PrintMyMailClient, print_succeeded
-from .config import Config
+from .config import Config, MailAccount
 from .deadletter import DeadLetterStore
 from .github import GitHubDigest, GitHubError, GitHubPoller
 from .mail import MailError, MailItem, MailPoller
@@ -24,10 +31,34 @@ from .timeutil import now
 log = logging.getLogger(__name__)
 
 
+class MailSource(Protocol):
+    """Runner 需要的邮箱轮询接口。"""
+
+    account: MailAccount
+
+    def poll(self) -> Iterator[MailItem]: ...
+
+    def mark_seen(self, item: MailItem) -> None: ...
+
+
+class GitHubSource(Protocol):
+    """Runner 需要的 GitHub 轮询接口。"""
+
+    @property
+    def poll_interval(self) -> float: ...
+
+    def poll(self) -> Iterator[GitHubDigest]: ...
+
+
 class Printer(Protocol):
     """Runner 需要的打印机接口。"""
 
-    def print_typst(self, typst_tar: bytes) -> bytes: ...
+    def print_typst(
+        self,
+        typst_tar: bytes,
+        *,
+        timeout: float | None = None,
+    ) -> bytes: ...
 
     def wait(
         self,
@@ -55,9 +86,12 @@ class Runner:
         if not math.isfinite(self.poll_interval) or self.poll_interval <= 0:
             raise ValueError("poll_interval 必须是大于 0 的有限数字")
         self.print_timeout = config.print_timeout
+        self.print_max_retries = config.print_max_retries
+        self.print_retry_base_delay = config.print_retry_base_delay
+        self.print_retry_max_delay = config.print_retry_max_delay
         self._print_lock = threading.Lock()
         self._dead_letter = DeadLetterStore(config.dead_letter_file)
-        self._mail_pollers = [
+        self._mail_pollers: list[MailSource] = [
             MailPoller(
                 account,
                 timeout=config.imap_timeout,
@@ -65,8 +99,12 @@ class Runner:
             )
             for account in config.mail
         ]
-        self._github_pollers = [
-            GitHubPoller(account, dead_letter=self._dead_letter)
+        self._github_pollers: list[GitHubSource] = [
+            GitHubPoller(
+                account,
+                dead_letter=self._dead_letter,
+                fetch_content=config.github_fetch_content,
+            )
             for account in config.github
         ]
 
@@ -141,13 +179,13 @@ class Runner:
 
     def _mail_loop(
         self,
-        poller: MailPoller,
+        poller: MailSource,
         printer: Printer,
         stop: threading.Event,
     ) -> None:
         while not stop.is_set():
             try:
-                self._poll_mail(poller, printer)
+                self._poll_mail(poller, printer, stop)
             except Exception:
                 log.exception("邮箱 %s 的后台任务异常", poller.account.user)
                 stop.wait(self.poll_interval)
@@ -156,14 +194,14 @@ class Runner:
 
     def _github_loop(
         self,
-        poller: GitHubPoller,
+        poller: GitHubSource,
         printer: Printer,
         stop: threading.Event,
         index: int,
     ) -> None:
         while not stop.is_set():
             try:
-                self._poll_github(poller, printer, index)
+                self._poll_github(poller, printer, index, stop)
             except Exception:
                 log.exception("第 %d 个 GitHub 账户的后台任务异常", index)
                 stop.wait(self.poll_interval)
@@ -180,12 +218,48 @@ class Runner:
         for index, poller in enumerate(self._github_pollers, start=1):
             self._poll_github(poller, printer, index)
 
-    def _poll_mail(self, poller: MailPoller, printer: Printer) -> None:
+    def _poll_mail(
+        self,
+        poller: MailSource,
+        printer: Printer,
+        stop: threading.Event | None = None,
+    ) -> None:
         try:
             for item in poller.poll():
                 processed = self.processor.mail(item)
-                if not self._print_mail(printer, processed):
-                    return
+                attempts = 0
+                while True:
+                    error = self._print_mail(printer, processed)
+                    if error is None:
+                        poller.mark_seen(item)
+                        break
+
+                    attempts += 1
+                    if attempts > self.print_max_retries:
+                        self._dead_letter.write(
+                            kind="print",
+                            account=poller.account.user,
+                            item=f"{item.folder} UID {item.uid}",
+                            reason=error,
+                            details={
+                                "folder": item.folder,
+                                "uid": item.uid,
+                                "subject": item.subject,
+                                "attempts": attempts,
+                            },
+                        )
+                        poller.mark_seen(item)
+                        break
+
+                    delay = self._retry_delay(attempts)
+                    log.warning(
+                        "打印失败，第 %d 次重试将在 %.1f 秒后（%s）",
+                        attempts,
+                        delay,
+                        error,
+                    )
+                    if not self._wait(stop, delay):
+                        return
         except MailError as exc:
             log.warning("邮箱 %s: %s", poller.account.user, exc)
         except Exception:
@@ -193,21 +267,71 @@ class Runner:
 
     def _poll_github(
         self,
-        poller: GitHubPoller,
+        poller: GitHubSource,
         printer: Printer,
         index: int,
+        stop: threading.Event | None = None,
     ) -> None:
         try:
             for digest in poller.poll():
                 processed = self.processor.github(digest)
-                if not self._print_github(printer, processed):
-                    return
+                attempts = 0
+                while True:
+                    error = self._print_github(printer, processed)
+                    if error is None:
+                        break
+
+                    attempts += 1
+                    if attempts > self.print_max_retries:
+                        self._dead_letter.write(
+                            kind="print",
+                            account=f"GitHub #{index}",
+                            item=", ".join(
+                                f"{item.notification.repo}#{item.notification.id}"
+                                for item in digest.items
+                            ),
+                            reason=error,
+                            details={
+                                "attempts": attempts,
+                                "notifications": [
+                                    {
+                                        "repo": item.notification.repo,
+                                        "id": item.notification.id,
+                                        "title": item.notification.title,
+                                    }
+                                    for item in digest.items
+                                ],
+                            },
+                        )
+                        break
+
+                    delay = self._retry_delay(attempts)
+                    log.warning(
+                        "打印失败，第 %d 次重试将在 %.1f 秒后（%s）",
+                        attempts,
+                        delay,
+                        error,
+                    )
+                    if not self._wait(stop, delay):
+                        return
         except GitHubError as exc:
             log.warning("第 %d 个 GitHub 账户轮询失败: %s", index, exc)
         except Exception:
             log.exception("第 %d 个 GitHub 账户轮询出现未预期错误", index)
 
-    def _print_mail(self, printer: Printer, item: MailItem) -> bool:
+    def _retry_delay(self, attempts: int) -> float:
+        return min(
+            self.print_retry_base_delay * (2 ** (attempts - 1)),
+            self.print_retry_max_delay,
+        )
+
+    def _wait(self, stop: threading.Event | None, delay: float) -> bool:
+        if stop is None:
+            time.sleep(delay)
+            return True
+        return not stop.wait(delay)
+
+    def _print_mail(self, printer: Printer, item: MailItem) -> str | None:
         tar = make_mail_tar(
             recp=item.recipient,
             sender=item.sender,
@@ -217,45 +341,49 @@ class Runner:
             content=item.body,
         )
         label = f"邮件《{item.subject}》"
-        if not self._submit(printer, tar, label):
-            return False
+        error = self._submit(printer, tar, label)
+        if error is not None:
+            return error
         log.info("打印完成: %s", label)
-        return True
+        return None
 
-    def _print_github(self, printer: Printer, digest: GitHubDigest) -> bool:
+    def _print_github(self, printer: Printer, digest: GitHubDigest) -> str | None:
         tar = make_github_tar(
             now(),
             digest.items,
         )
         label = f"{len(digest.items)} 条 GitHub 通知"
-        if not self._submit(printer, tar, label):
-            return False
+        error = self._submit(printer, tar, label)
+        if error is not None:
+            return error
         log.info("打印完成: %s", label)
-        return True
+        return None
 
-    def _submit(self, printer: Printer, tar: bytes, label: str) -> bool:
+    def _submit(self, printer: Printer, tar: bytes, label: str) -> str | None:
         with self._print_lock:
             try:
-                job_id = printer.print_typst(tar)
+                job_id = printer.print_typst(tar, timeout=self.print_timeout)
             except grpc.RpcError as exc:
-                log.warning("提交打印失败（%s）: %s", label, exc)
-                return False
+                message = f"提交打印失败: {exc}"
+                log.warning("%s（%s）", message, label)
+                return message
 
             try:
                 status = printer.wait(job_id, timeout=self.print_timeout)
             except (grpc.RpcError, TimeoutError, LookupError) as exc:
-                log.warning("等待打印结果失败（%s）: %s", label, exc)
-                return False
+                message = f"等待打印结果失败: {exc}"
+                log.warning("%s（%s）", message, label)
+                return message
 
             if not print_succeeded(status):
-                log.warning(
-                    "打印未成功（%s）: job_status=%s printer_status=%s",
-                    label,
-                    status.job_status,
-                    status.printer_status,
+                message = (
+                    "打印未成功: "
+                    f"job_status={status.job_status} "
+                    f"printer_status={status.printer_status}"
                 )
-                return False
-            return True
+                log.warning("%s（%s）", message, label)
+                return message
+            return None
 
 
 def run(

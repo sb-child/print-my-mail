@@ -21,12 +21,13 @@ import urllib.request
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from .config import GitHubAccount
 from .deadletter import DeadLetterStore
 from .template import GitHubItem, GitHubKind, GitHubNotification
+from .timeutil import iso_to_utc8
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +59,18 @@ class GitHubSubject:
     merged: bool = False
     tag_name: str = ""
     sha: str = ""
+
+
+class GitHubAPI(Protocol):
+    """GitHubPoller 需要的最小客户端接口。"""
+
+    poll_interval: float
+
+    def notifications(self) -> list[dict[str, Any]]: ...
+
+    def subject(self, url: str) -> GitHubSubject: ...
+
+    def mark_read(self, thread_id: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -259,12 +272,14 @@ class GitHubPoller:
         self,
         account: GitHubAccount,
         *,
-        client: GitHubClient | None = None,
+        client: GitHubAPI | None = None,
         dead_letter: DeadLetterStore | None = None,
+        fetch_content: bool = True,
     ) -> None:
         self.account = account
         self._client = client or GitHubClient(account.pat)
         self._dead_letter = dead_letter
+        self.fetch_content = fetch_content
 
     @property
     def poll_interval(self) -> float:
@@ -285,6 +300,12 @@ class GitHubPoller:
             item = self._to_item(thread)
             if item is None:
                 thread_id = thread.get("id")
+                subject = thread.get("subject")
+                details: dict[str, object] = {"thread_id": thread_id}
+                if isinstance(subject, dict):
+                    details["subject_type"] = subject.get("type")
+                    details["title"] = subject.get("title")
+                    details["url"] = subject.get("url")
                 log.warning("无法处理 GitHub 通知 thread=%s", thread_id)
                 if self._dead_letter:
                     self._dead_letter.write(
@@ -292,6 +313,7 @@ class GitHubPoller:
                         account="GitHub",
                         item=f"thread {thread_id}",
                         reason="通知缺少必要字段或无法解析",
+                        details=details,
                     )
                 if isinstance(thread_id, str):
                     invalid_ids.append(thread_id)
@@ -339,6 +361,14 @@ class GitHubPoller:
             except GitHubError as exc:
                 log.warning("查询 GitHub 通知正文失败，按未关闭处理: %s", exc)
 
+        if not self.fetch_content:
+            subject_info = GitHubSubject(
+                state=subject_info.state,
+                merged=subject_info.merged,
+                tag_name=subject_info.tag_name,
+                sha=subject_info.sha,
+            )
+
         kind = _notification_kind(subject_type, subject_info)
         number = _subject_number(url)
         if number is None:
@@ -358,7 +388,7 @@ class GitHubPoller:
             latest_comment_url = ""
 
         latest_comment_body = ""
-        if latest_comment_url and latest_comment_url != url:
+        if self.fetch_content and latest_comment_url and latest_comment_url != url:
             try:
                 latest_comment_body = self._client.subject(
                     latest_comment_url
@@ -378,7 +408,11 @@ class GitHubPoller:
                 label=label,
             ),
             reason=reason if isinstance(reason, str) else "",
-            updated_at=updated_at if isinstance(updated_at, str) else "",
+            updated_at=(
+                iso_to_utc8(updated_at)
+                if isinstance(updated_at, str)
+                else ""
+            ),
             url=url,
             latest_comment_url=latest_comment_url,
             body=subject_info.body,
