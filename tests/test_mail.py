@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import quopri
 from email.message import EmailMessage
 from email.utils import format_datetime
 from datetime import datetime, timedelta, timezone
@@ -31,6 +33,11 @@ def _raw(
         message["Date"] = date
     message.set_content(body)
     return message.as_bytes()
+
+
+def _encoded_word(text: str, source: str, declared: str) -> bytes:
+    encoded = base64.b64encode(text.encode(source))
+    return b"=?" + declared.encode() + b"?B?" + encoded + b"?="
 
 
 class FakeIMAP:
@@ -106,6 +113,141 @@ def test_html_body_is_converted() -> None:
     assert item.body == "Hello world"
     assert "<p>Hello <b>world</b></p>" in item.html_body
     assert "bad()" in item.html_body
+
+
+def test_raw_gbk_header_and_body() -> None:
+    subject = "《能源 ERC-20 我不知道是 ETH 还是 USDT》"
+    body = "这是正文，中文正常显示。"
+    raw = (
+        b"From: sender@example.com\n"
+        b"Subject: " + subject.encode("gbk") + b"\n"
+        b"Content-Type: text/plain; charset=gb2312\n"
+        b"Content-Transfer-Encoding: 8bit\n\n"
+        + body.encode("gbk")
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.subject == subject
+    assert item.body == body
+
+
+def test_encoded_word_with_wrong_charset() -> None:
+    subject = "中文标题"
+    raw = b"Subject: " + _encoded_word(subject, "gbk", "utf-8") + b"\n\n"
+    item = _parse_message("me@example.com", raw)
+    assert item.subject == subject
+
+
+def test_real_gb2312_gbk_subject() -> None:
+    """真实样本：声明 gb2312，但字节包含 GBK 扩展。"""
+    raw = (
+        b"Subject: =?gb2312?B?xNyOzc7SytXSu/xjIEVSQy0yMCCG4aOsztKyu9aqtcDKxyBFVEgg34DKxyBV?=\r\n"
+        b" =?gb2312?Q?SDT?=\r\n\r\n"
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.subject == "能幫我收一點 ERC-20 嗎，我不知道是 ETH 還是 USDT"
+
+
+def test_encoded_word_utf8_labeled_latin1() -> None:
+    subject = "你好，世界"
+    raw = b"Subject: " + _encoded_word(
+        subject, "utf-8", "iso-8859-1"
+    ) + b"\n\n"
+    item = _parse_message("me@example.com", raw)
+    assert item.subject == subject
+
+
+def test_from_display_name_encoding() -> None:
+    raw = (
+        b"From: "
+        + _encoded_word("张三", "gbk", "gbk")
+        + b" <sender@example.com>\n\n"
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.sender == "sender@example.com"
+    assert item.sender_name == "张三"
+
+
+def test_folded_encoded_subject() -> None:
+    raw = (
+        b"Subject: =?utf-8?B?5Lit5paH?=\r\n"
+        b" =?utf-8?B?5qCH6aKY?=\r\n\r\n"
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.subject == "中文标题"
+
+
+def test_raw_utf8_header() -> None:
+    subject = "中文标题"
+    raw = b"Subject: " + subject.encode("utf-8") + b"\n\n"
+    item = _parse_message("me@example.com", raw)
+    assert item.subject == subject
+
+
+def test_body_charset_mismatch() -> None:
+    body = "中文正文"
+    raw = (
+        b"Content-Type: text/plain; charset=utf-8\n"
+        b"Content-Transfer-Encoding: base64\n\n"
+        + base64.b64encode(body.encode("gbk"))
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.body == body
+
+
+def test_body_utf8_labeled_latin1() -> None:
+    body = "中文正文"
+    raw = (
+        b"Content-Type: text/plain; charset=iso-8859-1\n"
+        b"Content-Transfer-Encoding: base64\n\n"
+        + base64.b64encode(body.encode("utf-8"))
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.body == body
+
+
+def test_quoted_printable_gbk_body() -> None:
+    body = "能幫我收一點 ERC-20 嗎"
+    raw = (
+        b"Content-Type: text/plain; charset=gb2312\n"
+        b"Content-Transfer-Encoding: quoted-printable\n\n"
+        + quopri.encodestring(body.encode("gbk"))
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.body == body
+
+
+def test_body_without_charset_falls_back_to_gb18030() -> None:
+    body = "这是测试"
+    raw = (
+        b"Content-Type: text/plain\n"
+        b"Content-Transfer-Encoding: 8bit\n\n"
+        + body.encode("gbk")
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.body == body
+
+
+def test_html_body_charset_mismatch() -> None:
+    html = "<p>中文正文</p>"
+    raw = (
+        b"Content-Type: text/html; charset=utf-8\n"
+        b"Content-Transfer-Encoding: base64\n\n"
+        + base64.b64encode(html.encode("gbk"))
+    )
+    item = _parse_message("me@example.com", raw)
+    assert item.body == "中文正文"
+    assert "中文正文" in item.html_body
+
+
+def test_proper_encoded_words_are_unchanged() -> None:
+    subject = "中文标题"
+    for source, declared in (("utf-8", "utf-8"), ("gbk", "gbk")):
+        raw = (
+            b"Subject: "
+            + _encoded_word(subject, source, declared)
+            + b"\n\n"
+        )
+        assert _parse_message("me@example.com", raw).subject == subject
 
 
 def test_empty_plain_falls_back_to_html() -> None:

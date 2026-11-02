@@ -23,7 +23,7 @@
 #v(-8pt)
 #box(fill: rgb("#cccccc"), width: 100%, inset: 2pt)[
   #text("{{title}}", weight: "bold")
-
+  #v(-5pt)
   #align(right)[
     -- #text("{{sender_name}}", size: 7pt)
   ]

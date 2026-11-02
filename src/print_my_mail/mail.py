@@ -6,6 +6,8 @@
 - `MailItem.body` 是用于打印的纯文本；
 - `MailItem.html_body` 保留原始 HTML，供 `PostProcessor` 使用；
 - 附件和图片不解析；
+- 头字段和正文都从原始字节重新解码，兼容 gb2312 扩展（GBK）、
+  charset 标错、无 charset 等常见情况；
 - `folders` 可以配置 INBOX、Spam/Junk 等多个文件夹；
 - 启动时只处理 `max_age` 秒以内到达的邮件，更早的未读邮件跳过，
   不打印也不修改已读状态。
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import codecs
 import email
 import email.policy
 import imaplib
@@ -41,7 +44,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from email.header import decode_header, make_header
+from email.header import decode_header
 from email.message import EmailMessage, MIMEPart
 from email.utils import parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
@@ -70,6 +73,27 @@ _IMAP_MONTHS = (
     "Oct",
     "Nov",
     "Dec",
+)
+
+_CHARSET_ALIASES = {
+    "gb2312": "gb18030",
+    "gbk": "gb18030",
+    "x-gbk": "gb18030",
+    "cp936": "gb18030",
+    "ms936": "gb18030",
+    "euc-cn": "gb18030",
+    "utf8": "utf-8",
+    "latin1": "latin-1",
+}
+
+_UNKNOWN_CHARSETS = frozenset(
+    {
+        "unknown-8bit",
+        "unknown",
+        "x-unknown",
+        "8bit",
+        "binary",
+    }
 )
 
 _HTML_BLOCK_TAGS = frozenset({"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4"})
@@ -425,13 +449,13 @@ def _parse_message(
         EmailMessage,
         email.message_from_bytes(raw, policy=email.policy.default),
     )
-    sender_name, sender = parseaddr(_decode_header(message.get("From")))
+    sender_name, sender = parseaddr(_header_value(message, "From"))
     body, html_body = _message_bodies(message)
     return MailItem(
-        recipient=_decode_header(message.get("To")) or recipient,
+        recipient=_header_value(message, "To") or recipient,
         sender=sender or sender_name or "unknown",
         sender_name=sender_name or sender or "未知发件人",
-        subject=_decode_header(message.get("Subject")) or "(无主题)",
+        subject=_header_value(message, "Subject") or "(无主题)",
         date=_parse_date(message.get("Date")),
         body=body,
         html_body=html_body,
@@ -440,13 +464,67 @@ def _parse_message(
     )
 
 
-def _decode_header(value: str | None) -> str:
+def _header_value(message: EmailMessage, name: str) -> str:
+    """从原始头字段解码，避免 policy 提前用错误字符集替换字节。"""
+    raw = _raw_header(message, name)
+    if raw is None:
+        return ""
+    return _decode_header(raw)
+
+
+def _raw_header(message: EmailMessage, name: str) -> str | None:
+    lower = name.lower()
+    for key, value in message.raw_items():
+        if key.lower() == lower:
+            return value
+    return None
+
+
+def _decode_header(value: str) -> str:
     if not value:
         return ""
+    # 展开折行，再交给 decode_header 处理 RFC 2047 encoded-word。
+    value = re.sub(r"\r?\n[ \t]+", " ", value)
     try:
-        return str(make_header(decode_header(value)))
-    except (UnicodeDecodeError, LookupError):
+        chunks = decode_header(value)
+    except (LookupError, ValueError):
+        chunks = [(value, None)]
+
+    parts: list[str] = []
+    for chunk, charset in chunks:
+        if isinstance(chunk, bytes):
+            parts.append(_decode_bytes(chunk, charset))
+        else:
+            parts.append(_decode_text_chunk(chunk))
+    return "".join(parts).strip()
+
+
+def _decode_text_chunk(value: str) -> str:
+    """处理 decode_header 返回的 str 分片。
+
+    policy 对 8bit 原始头字段会使用 surrogateescape，这里把原始字节还原后
+    再按 UTF-8 / GB18030 等编码重新解码。
+    """
+    try:
+        raw = value.encode("ascii", "surrogateescape")
+    except UnicodeEncodeError:
+        return _fix_mojibake(value)
+    return _decode_bytes(raw, None)
+
+
+def _fix_mojibake(value: str) -> str:
+    """修复常见的 UTF-8 被当成 Latin-1 解码的情况。"""
+    if not any(ord(char) > 0x7F for char in value):
         return value
+    try:
+        raw = value.encode("latin-1")
+    except UnicodeEncodeError:
+        return value
+    try:
+        fixed = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return value
+    return fixed if fixed != value else value
 
 
 def _parse_date(value: str | None) -> datetime:
@@ -477,17 +555,97 @@ def _part_text(part: MIMEPart | None) -> str | None:
     if part is None:
         return None
 
+    # 直接取原始字节，避免 get_content() 在字符集标错时静默产生乱码。
+    try:
+        payload = part.get_payload(decode=True)
+    except (LookupError, ValueError):
+        payload = None
+    if isinstance(payload, bytes):
+        return _decode_bytes(payload, part.get_content_charset())
+    if isinstance(payload, str):
+        return _fix_mojibake(payload)
+
     try:
         content = part.get_content()
     except (LookupError, UnicodeDecodeError):
-        payload = part.get_payload(decode=True)
-        content = (
-            payload.decode("utf-8", errors="replace")
-            if isinstance(payload, bytes)
-            else ""
-        )
-
+        return None
     return content if isinstance(content, str) else None
+
+
+def _decode_bytes(data: bytes, charset: str | None) -> str:
+    """按声明的字符集解码，并在常见标错场景下自动回退。"""
+    if not data:
+        return ""
+
+    if data.startswith(codecs.BOM_UTF32_LE) or data.startswith(
+        codecs.BOM_UTF32_BE
+    ):
+        return data.decode("utf-32", errors="replace")
+    if data.startswith(codecs.BOM_UTF8):
+        return data.decode("utf-8-sig", errors="replace")
+    if data.startswith(codecs.BOM_UTF16_LE) or data.startswith(
+        codecs.BOM_UTF16_BE
+    ):
+        return data.decode("utf-16", errors="replace")
+
+    normalized = _normalize_charset(charset)
+
+    # 单字节字符集（Latin-1 等）经常被误用来标注 UTF-8 内容；
+    # 多字节字符集则优先信任声明值，避免把真正的 GBK/Big5 解错。
+    if normalized is None or _is_single_byte_charset(normalized):
+        utf8 = _try_decode(data, "utf-8")
+        if utf8 is not None:
+            return utf8
+
+    if normalized is not None:
+        decoded = _try_decode(data, normalized)
+        if decoded is not None:
+            return decoded
+
+    for candidate in ("utf-8", "gb18030", "big5", "shift_jis", "euc-kr"):
+        if candidate == normalized:
+            continue
+        decoded = _try_decode(data, candidate)
+        if decoded is not None:
+            return decoded
+
+    if normalized is not None:
+        try:
+            return data.decode(normalized, errors="replace")
+        except LookupError:
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
+def _try_decode(data: bytes, encoding: str) -> str | None:
+    try:
+        return data.decode(encoding)
+    except (LookupError, UnicodeDecodeError):
+        return None
+
+
+def _normalize_charset(value: str | None) -> str | None:
+    if not value:
+        return None
+    name = value.strip().strip('"').split(";", 1)[0].strip().lower()
+    if not name or name in _UNKNOWN_CHARSETS:
+        return None
+    name = _CHARSET_ALIASES.get(name, name)
+    try:
+        codecs.lookup(name)
+    except LookupError:
+        return None
+    return name
+
+
+def _is_single_byte_charset(name: str) -> bool:
+    return (
+        name in {"ascii", "us-ascii", "latin-1", "iso-8859-1"}
+        or name.startswith("iso-8859-")
+        or name.startswith("windows-125")
+        or name.startswith("cp125")
+        or name.startswith("koi8-")
+    )
 
 
 def _html_to_text(html: str) -> str:
