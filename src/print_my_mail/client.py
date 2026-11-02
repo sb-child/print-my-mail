@@ -21,6 +21,18 @@ TERMINAL_STATUSES = frozenset(
 )
 
 
+def print_succeeded(status: dzsrv_pb2.JobStatus) -> bool:
+    """判断一个终态任务是否真的打印成功。
+
+    dz-server 在成功时把 printer_status 设为 PS_PRINTABLE；
+    STATUS_PRINT_COMPLETED 也可能表示打印失败，必须结合 printer_status 判断。
+    """
+    return (
+        status.job_status == dzsrv_pb2.STATUS_PRINT_COMPLETED
+        and status.printer_status == dzsrv_pb2.PS_PRINTABLE
+    )
+
+
 class PrintMyMailClient:
     """print-my-mail 服务端客户端。
 

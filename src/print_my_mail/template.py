@@ -1,3 +1,10 @@
+"""Typst 模板渲染和 tar 打包。
+
+- 模板从包内 `templates/` 读取，安装后也能使用；
+- 邮件和 GitHub 的时间统一按 UTC+8 输出；
+- GitHub 的每条通知通过 `#item(...)` 生成，支持单独的内容字段。
+"""
+
 from __future__ import annotations
 
 import io
@@ -5,18 +12,33 @@ import re
 import tarfile
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from importlib import resources
+from importlib.resources.abc import Traversable
 from typing import Iterable, Literal
+
+from .timeutil import to_utc8
 
 _TEMPLATE_NAME = "main.typ"
 _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
-GitHubKind = Literal["issue", "closed-issue", "pr", "pr-merged", "notification"]
+GitHubKind = Literal[
+    "issue",
+    "closed-issue",
+    "pr",
+    "pr-merged",
+    "pr-closed",
+    "release",
+    "commit",
+    "notification",
+]
 _GITHUB_KINDS: tuple[GitHubKind, ...] = (
     "issue",
     "closed-issue",
     "pr",
     "pr-merged",
+    "pr-closed",
+    "release",
+    "commit",
     "notification",
 )
 
@@ -30,7 +52,10 @@ class GitHubNotification:
     - `issue`: 打开的 issue
     - `closed-issue`: 已关闭的 issue
     - `pr`: 打开的 PR
-    - `pr-merged`: 已合并/关闭的 PR
+    - `pr-merged`: 已合并的 PR
+    - `pr-closed`: 已关闭但未合并的 PR
+    - `release`: Release
+    - `commit`: Commit
     - `notification`: 其他类型的 GitHub 通知
     """
 
@@ -38,13 +63,28 @@ class GitHubNotification:
     id: int
     title: str
     kind: GitHubKind
+    label: str = ""
+
+
+@dataclass(frozen=True)
+class GitHubItem:
+    """一条 GitHub 通知及打印/后处理上下文。"""
+
+    notification: GitHubNotification
+    reason: str = ""
+    updated_at: str = ""
+    url: str = ""
+    latest_comment_url: str = ""
+    body: str = ""
+    latest_comment_body: str = ""
+    content: str = ""
 
 
 def make_mail_tar(
     recp: str, sender: str, t: datetime, title: str, sender_name: str, content: str
 ) -> bytes:
     """
-    通过模板 `template/mail/main.typ` 制作邮件tar包
+    通过模板 `templates/mail/main.typ` 制作邮件tar包
     """
     template_dir = _template_dir("mail")
     rendered = _render(
@@ -52,7 +92,9 @@ def make_mail_tar(
         {
             "recp": _escape_typst_string(recp),
             "sender": _escape_typst_string(sender),
-            "time": _escape_typst_string(t.strftime("%Y/%m/%d %H:%M:%S")),
+            "time": _escape_typst_string(
+                to_utc8(t).strftime("%Y/%m/%d %H:%M:%S")
+            ),
             "title": _escape_typst_string(title),
             "sender_name": _escape_typst_string(sender_name),
             "content": _escape_typst_string(content),
@@ -63,33 +105,33 @@ def make_mail_tar(
 
 def make_github_tar(
     t: datetime,
-    notifications: Iterable[GitHubNotification],
-    content: str = "",
+    items: Iterable[GitHubItem | GitHubNotification],
 ) -> bytes:
     """
-    通过模板 `template/github/main.typ` 制作 GitHub 通知tar包
+    通过模板 `templates/github/main.typ` 制作 GitHub 通知tar包
     """
     template_dir = _template_dir("github")
     rendered = _render(
         template_dir,
         {
-            "time": _escape_typst_string(t.strftime("%Y/%m/%d %H:%M:%S")),
-            "items": _github_items(notifications),
-            "content": _escape_typst_string(content),
+            "time": _escape_typst_string(
+                to_utc8(t).strftime("%Y/%m/%d %H:%M:%S")
+            ),
+            "items": _github_items(items),
         },
     )
     return _make_tar(template_dir, rendered)
 
 
-def _render(template_dir: Path, values: dict[str, str]) -> str:
+def _render(template_dir: Traversable, values: dict[str, str]) -> str:
     template = (template_dir / _TEMPLATE_NAME).read_text(encoding="utf-8")
     return _PLACEHOLDER_RE.sub(lambda match: _value(values, match), template)
 
 
-def _make_tar(template_dir: Path, rendered: str) -> bytes:
+def _make_tar(template_dir: Traversable, rendered: str) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
-        for path in sorted(template_dir.iterdir()):
+        for path in sorted(template_dir.iterdir(), key=lambda item: item.name):
             if not path.is_file():
                 continue
             if path.name == _TEMPLATE_NAME:
@@ -107,21 +149,27 @@ def _make_tar(template_dir: Path, rendered: str) -> bytes:
     return buffer.getvalue()
 
 
-def _github_items(notifications: Iterable[GitHubNotification]) -> str:
-    items = []
-    for notification in notifications:
+def _github_items(
+    entries: Iterable[GitHubItem | GitHubNotification],
+) -> str:
+    chunks = []
+    for entry in entries:
+        item = entry if isinstance(entry, GitHubItem) else GitHubItem(entry)
+        notification = item.notification
         kind = notification.kind
         if kind not in _GITHUB_KINDS:
             raise ValueError(f"未知的 GitHub 通知类型: {kind}")
-        items.append(
-            "#t("
-            f'repo: "{_escape_typst_string(notification.repo)}", '
-            f"id: {int(notification.id)}, "
-            f'title: "{_escape_typst_string(notification.title)}", '
-            f'kind: "{kind}"'
+        chunks.append(
+            "#item(\n"
+            f'  repo: "{_escape_typst_string(notification.repo)}",\n'
+            f"  id: {int(notification.id)},\n"
+            f'  title: "{_escape_typst_string(notification.title)}",\n'
+            f'  kind: "{kind}",\n'
+            f'  label: "{_escape_typst_string(notification.label)}",\n'
+            f'  content: "{_escape_typst_string(item.content)}",\n'
             ")"
         )
-    return "\n".join(items)
+    return "\n".join(chunks)
 
 
 def _value(values: dict[str, str], match: re.Match[str]) -> str:
@@ -137,12 +185,8 @@ def _escape_typst_string(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _template_dir(name: str) -> Path:
-    candidates = (
-        Path.cwd() / "template" / name,
-        Path(__file__).resolve().parents[2] / "template" / name,
-    )
-    for path in candidates:
-        if (path / _TEMPLATE_NAME).is_file():
-            return path
-    raise FileNotFoundError(f"找不到模板: template/{name}/{_TEMPLATE_NAME}")
+def _template_dir(name: str) -> Traversable:
+    template_dir = resources.files("print_my_mail.templates") / name
+    if not (template_dir / _TEMPLATE_NAME).is_file():
+        raise FileNotFoundError(f"找不到模板: {name}/{_TEMPLATE_NAME}")
+    return template_dir

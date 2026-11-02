@@ -10,6 +10,12 @@ uv run print-my-mail
 
 # 打印一封示例邮件和示例 GitHub 通知
 uv run print-my-mail test
+
+# 只轮询一轮，便于排障
+uv run print-my-mail once
+
+# 列出邮箱的真实 IMAP 文件夹名
+uv run print-my-mail folders
 ```
 
 ## 启动 gRPC 打印服务器
@@ -45,7 +51,12 @@ user = "your_email@gmail.com"
 pass = "your_app_password"
 host = "imap.gmail.com"
 port = 993
+folders = ["INBOX", "[Gmail]/Spam"]
 ```
+
+`folders` 默认是 `["INBOX"]`。如果想把垃圾邮件也打印出来，把服务商的 Spam/Junk 文件夹加进去。Gmail 通常是 `[Gmail]/Spam`，其他服务商可能是 `Junk`、`Junk Email` 等。不要直接监听 `All Mail`，否则归档邮件、已发送邮件会重复打印。
+
+IMAP 没有统一的“所有收件箱”概念，`folders` 也不会自动包含 Spam；需要按服务商的实际文件夹名显式配置。
 
 ## 工作方式
 
@@ -54,11 +65,25 @@ port = 993
 1. 每 60 秒（可通过 `[server] poll_interval` 调整）轮询配置里的所有 IMAP 邮箱和 GitHub 账户；
 2. 打印邮箱中的未读邮件；
 3. 把 GitHub 的未读通知合并成一张小票打印；
-4. 打印任务成功提交后，才把邮件标记为已读、把 GitHub 通知标记为已读。
+4. 等待打印任务进入成功终态后，才把邮件标记为已读、把 GitHub 通知标记为已读。
+
+`[server]` 还支持：
+
+```toml
+print_timeout = 120          # 等待打印完成的最长时间（秒）
+imap_timeout = 30            # IMAP 连接和操作超时（秒）
+dead_letter_file = "dead-letter.jsonl"  # 永久失败通知的记录文件
+```
+
+每个邮箱和 GitHub 账户会在独立线程里轮询，打印提交仍然串行，避免互相拖慢。
+
+投递语义是 at-least-once：极端情况下（打印完成但还来不及标记已读）可能重复打印一次，但不会静默丢通知。无法解析的邮件、无法转换的 GitHub 通知会写入 `dead_letter_file`，然后标记为已读，避免每轮重复失败。
 
 打印前的内容处理通过 `PostProcessor` 预留：
 
 ```python
+from dataclasses import replace
+
 from print_my_mail import Runner, TransparentPostProcessor, load_config
 
 
@@ -68,11 +93,28 @@ class MyProcessor(TransparentPostProcessor):
         return item
 
     def github(self, digest):
-        return digest
+        items = []
+        for item in digest.items:
+            # 这些字段都可以交给 AI
+            print(item.notification.repo, item.notification.title)
+            print(item.reason, item.body, item.latest_comment_body)
+            items.append(replace(item, content="可选的 AI 摘要"))
+        return replace(digest, items=tuple(items))
 
 
 Runner(load_config(), processor=MyProcessor()).run_forever()
 ```
+
+`GitHubItem` 会带上：
+
+- `notification`：repo、编号、标题、类型
+- `reason`：GitHub 的通知原因，比如 `mention`、`review_requested`
+- `updated_at`
+- `url`
+- `latest_comment_url`
+- `body`：Issue / PR / Release 等资源正文
+- `latest_comment_body`：最新评论正文
+- `content`：打印在通知下面的文本，默认空，通常由后处理器填写
 
 默认的 `TransparentPostProcessor` 原样返回内容，不做任何改写。
 

@@ -5,6 +5,12 @@
 target = "127.0.0.1:54321"
 # 轮询间隔（秒）
 poll_interval = 60
+# 等待打印任务完成的最长时间（秒）
+print_timeout = 120
+# IMAP 连接和操作超时（秒）
+imap_timeout = 30
+# 永久失败通知的死信文件
+dead_letter_file = "dead-letter.jsonl"
 
 # 监听一个IMAP邮箱
 [[mail]]
@@ -13,6 +19,8 @@ user = "your_email@gmail.com"
 pass = "your_app_password"
 # host = "imap.gmail.com"
 # port = 993
+# 可选，默认只监听 INBOX。Gmail 的垃圾邮件文件夹通常是 "[Gmail]/Spam"
+# folders = ["INBOX", "[Gmail]/Spam"]
 
 # 监听一个GitHub账户
 [[github]]

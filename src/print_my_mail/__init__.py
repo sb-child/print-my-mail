@@ -9,11 +9,12 @@ from .config import (
     read_config,
 )
 from .github import GitHubDigest
-from .mail import MailItem
+from .mail import MailFolder, MailItem, list_folders
 from .postprocess import PostProcessor, TransparentPostProcessor
-from .runner import Runner, run
+from .runner import Runner, run, run_once
 from .sample import print_test_page
 from .template import (
+    GitHubItem,
     GitHubKind,
     GitHubNotification,
     make_github_tar,
@@ -25,9 +26,11 @@ __all__ = [
     "DEFAULT_TARGET",
     "GitHubAccount",
     "GitHubDigest",
+    "GitHubItem",
     "GitHubKind",
     "GitHubNotification",
     "MailAccount",
+    "MailFolder",
     "MailItem",
     "PostProcessor",
     "PrintMyMailClient",
@@ -38,7 +41,9 @@ __all__ = [
     "main",
     "make_github_tar",
     "make_mail_tar",
+    "list_folders",
     "print_test_page",
     "read_config",
     "run",
+    "run_once",
 ]

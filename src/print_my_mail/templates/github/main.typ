@@ -4,8 +4,8 @@
   x.codepoints().join(sym.zws)
 }
 
-#let t(repo: str, id: int, title: str, kind: str) = {
-  let closed = kind == "closed-issue" or kind == "pr-merged"
+#let t(repo: str, id: int, title: str, kind: str, label: str) = {
+  let closed = kind == "closed-issue" or kind == "pr-merged" or kind == "pr-closed"
   let icon = if kind == "issue" {
     box(image("issue.svg", width: 8pt), baseline: 2pt)
   } else if kind == "closed-issue" {
@@ -14,6 +14,12 @@
     box(image("pr.svg", width: 8pt), baseline: 2pt)
   } else if kind == "pr-merged" {
     box(image("pr-merged.svg", width: 8pt), baseline: 2pt)
+  } else if kind == "pr-closed" {
+    box(image("pr-closed.svg", width: 8pt), baseline: 2pt)
+  } else if kind == "release" {
+    box(image("tag.svg", width: 8pt), baseline: 2pt)
+  } else if kind == "commit" {
+    box(image("bell-dot.svg", width: 8pt), baseline: 2pt)
   } else if kind == "notification" {
     box(image("bell-dot.svg", width: 8pt), baseline: 2pt)
   } else {
@@ -26,12 +32,29 @@
     text(x, size: 6pt)
   }
 
-  align(right)[#txt("#" + str(id))]
+  let right_text = if label != "" { label } else { "#" + str(id) }
+  align(right)[#txt(right_text)]
   v(-14pt)
   [
     #icon #txt(repo)
     #v(-7pt)
     #txt(title)
+  ]
+}
+
+#let item(repo: str, id: int, title: str, kind: str, label: str, content: str) = {
+  [
+    #v(-7pt)
+    #box(fill: rgb("#cccccc"), width: 100%, inset: 2pt)[
+      #t(repo: repo, id: id, title: title, kind: kind, label: label)
+    ]
+    #v(-7pt)
+    #text(
+      weight: "light",
+      size: 6pt,
+    )[#content]
+    #v(-5pt)
+    #align(center)[#line(length: 80%, stroke: (thickness: 0.6pt))]
   ]
 }
 
@@ -50,16 +73,7 @@
   )
 ]
 
-#v(-7pt)
-#box(fill: rgb("#cccccc"), width: 100%, inset: 2pt)[
-  {{items}}
-]
-
-#text(
-  "{{content}}",
-  weight: "light",
-  size: 6pt,
-)
+{{items}}
 
 // ---
 

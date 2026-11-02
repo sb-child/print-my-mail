@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .client import DEFAULT_TARGET
 
+log = logging.getLogger(__name__)
+
 CONFIG_NAME = "config.toml"
+
+_TOP_LEVEL_KEYS = frozenset({"server", "mail", "github"})
+_SERVER_KEYS = frozenset(
+    {
+        "target",
+        "poll_interval",
+        "print_timeout",
+        "imap_timeout",
+        "dead_letter_file",
+    }
+)
+_MAIL_KEYS = frozenset({"user", "pass", "host", "port", "folders"})
+_GITHUB_KEYS = frozenset({"pat"})
 
 _IMAP_HOSTS = {
     "gmail.com": "imap.gmail.com",
@@ -30,16 +47,33 @@ class MailAccount:
     """一个需要监听的 IMAP 邮箱。"""
 
     user: str
-    password: str
+    password: str = field(repr=False)
     host: str
     port: int = 993
+    folders: tuple[str, ...] = ("INBOX",)
+
+    def __post_init__(self) -> None:
+        if not self.user:
+            raise ValueError("邮箱 user 不能为空")
+        if not self.password:
+            raise ValueError("邮箱 pass 不能为空")
+        if not self.host:
+            raise ValueError("邮箱 host 不能为空")
+        if not 1 <= self.port <= 65535:
+            raise ValueError(f"邮箱端口超出范围: {self.port}")
+        if not self.folders or any(not folder for folder in self.folders):
+            raise ValueError("邮箱 folders 必须包含至少一个非空文件夹名")
 
 
 @dataclass(frozen=True)
 class GitHubAccount:
     """一个需要监听的 GitHub 账户。"""
 
-    pat: str
+    pat: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.pat:
+            raise ValueError("GitHub pat 不能为空")
 
 
 @dataclass(frozen=True)
@@ -48,8 +82,20 @@ class Config:
 
     target: str = DEFAULT_TARGET
     poll_interval: float = 60.0
+    print_timeout: float = 120.0
+    imap_timeout: float = 30.0
+    dead_letter_file: str = "dead-letter.jsonl"
     mail: tuple[MailAccount, ...] = ()
     github: tuple[GitHubAccount, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.target:
+            raise ValueError("server.target 不能为空")
+        if not self.dead_letter_file:
+            raise ValueError("server.dead_letter_file 不能为空")
+        _require_positive_finite(self.poll_interval, "server.poll_interval")
+        _require_positive_finite(self.print_timeout, "server.print_timeout")
+        _require_positive_finite(self.imap_timeout, "server.imap_timeout")
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -68,21 +114,35 @@ def load_config(path: str | Path | None = None) -> Config:
         data = _load_default_data()
 
     server = _table(data, "server")
+    _warn_unknown(data, _TOP_LEVEL_KEYS, "顶层")
+    _warn_unknown(server, _SERVER_KEYS, "[server]")
+
+    mail_items = _array_of_tables(data, "mail")
+    github_items = _array_of_tables(data, "github")
+    for index, item in enumerate(mail_items, start=1):
+        _warn_unknown(item, _MAIL_KEYS, f"[[mail]] 第 {index} 项")
+    for index, item in enumerate(github_items, start=1):
+        _warn_unknown(item, _GITHUB_KEYS, f"[[github]] 第 {index} 项")
 
     mail = tuple(
         _mail_account(item, index)
-        for index, item in enumerate(_array_of_tables(data, "mail"), start=1)
+        for index, item in enumerate(mail_items, start=1)
     )
     github = tuple(
         GitHubAccount(
             pat=_require_str(item, "pat", f"[[github]] 第 {index} 项"),
         )
-        for index, item in enumerate(_array_of_tables(data, "github"), start=1)
+        for index, item in enumerate(github_items, start=1)
     )
 
     return Config(
         target=_get_str(server, "target", DEFAULT_TARGET),
         poll_interval=_get_float(server, "poll_interval", 60.0),
+        print_timeout=_get_float(server, "print_timeout", 120.0),
+        imap_timeout=_get_float(server, "imap_timeout", 30.0),
+        dead_letter_file=_get_str(
+            server, "dead_letter_file", "dead-letter.jsonl"
+        ),
         mail=mail,
         github=github,
     )
@@ -159,6 +219,32 @@ def _get_float(data: dict[str, Any], key: str, default: float) -> float:
     return float(value)
 
 
+def _get_str_list(
+    data: dict[str, Any],
+    key: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    value = data.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"配置项 {key} 必须是非空字符串数组")
+    if any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"配置项 {key} 必须是非空字符串数组")
+    return tuple(value)
+
+
+def _require_positive_finite(value: float, name: str) -> None:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"配置项 {name} 必须是大于 0 的有限数字")
+
+
+def _warn_unknown(data: dict[str, Any], known: frozenset[str], context: str) -> None:
+    unknown = sorted(set(data) - known)
+    if unknown:
+        log.warning("配置项 %s 中存在未知字段: %s", context, ", ".join(unknown))
+
+
 def _require_str(data: dict[str, Any], key: str, context: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value:
@@ -174,6 +260,7 @@ def _mail_account(item: dict[str, Any], index: int) -> MailAccount:
         password=_require_str(item, "pass", context),
         host=_get_str(item, "host", _default_imap_host(user)),
         port=_get_int(item, "port", 993),
+        folders=_get_str_list(item, "folders", ("INBOX",)),
     )
 
 

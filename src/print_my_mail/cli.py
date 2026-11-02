@@ -1,4 +1,11 @@
-"""命令行入口。"""
+"""命令行入口。
+
+命令：
+- `print-my-mail`：持续监听并打印；
+- `print-my-mail test`：打印示例页面；
+- `print-my-mail once`：只轮询一轮；
+- `print-my-mail folders`：列出配置邮箱的真实 IMAP 文件夹名。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,8 @@ from collections.abc import Sequence
 
 from .client import PrintMyMailClient
 from .config import Config, load_config
-from .runner import run
+from .mail import MailError, list_folders
+from .runner import run, run_once
 from .sample import print_test_page
 
 
@@ -19,6 +27,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("test", help="打印一封示例邮件和示例 GitHub 通知")
+    subparsers.add_parser("once", help="轮询一轮后退出")
+    subparsers.add_parser("folders", help="列出配置邮箱的 IMAP 文件夹")
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -29,8 +39,31 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     if args.command == "test":
         _print_test(config)
+    elif args.command == "once":
+        run_once(config)
+    elif args.command == "folders":
+        _print_folders(config)
     else:
         run(config)
+
+
+def _print_folders(config: Config) -> None:
+    if not config.mail:
+        print("没有配置任何邮箱")
+        return
+
+    for account in config.mail:
+        print(f"{account.user}:")
+        try:
+            folders = list_folders(account, timeout=config.imap_timeout)
+        except MailError as exc:
+            print(f"  读取失败: {exc}")
+            continue
+        for folder in folders:
+            flags = f"  {' '.join(folder.flags)}" if folder.flags else ""
+            display = folder.display_name
+            decoded = f"  ({display})" if display != folder.name else ""
+            print(f"  {folder.name}{flags}{decoded}")
 
 
 def _print_test(config: Config) -> None:

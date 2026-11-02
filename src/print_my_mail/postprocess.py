@@ -20,7 +20,12 @@ class PostProcessor(Protocol):
         ...
 
     def github(self, digest: GitHubDigest) -> GitHubDigest:
-        """处理一批 GitHub 通知，返回准备打印的内容。"""
+        """
+        处理一批 GitHub 通知。
+
+        `digest.items` 里包含标题、原因、issue/PR 正文和最新评论正文，
+        可以给每条 item 设置 `content`，打印时会显示在对应通知下面。
+        """
         ...
 
 
