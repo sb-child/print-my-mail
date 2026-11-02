@@ -1,4 +1,15 @@
-"""统一使用 UTC+8 时间。"""
+"""统一使用 UTC+8 时间。
+
+用法::
+
+    from datetime import datetime, timezone
+
+    from print_my_mail.timeutil import iso_to_utc8, now, to_utc8
+
+    print(now().isoformat())
+    print(to_utc8(datetime.now(timezone.utc)).isoformat())
+    print(iso_to_utc8("2026-11-02T10:00:00Z"))
+"""
 
 from __future__ import annotations
 

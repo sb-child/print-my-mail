@@ -3,6 +3,16 @@
 - 每个邮箱 / GitHub 账户在独立线程中轮询；
 - 打印提交和等待结果串行执行；
 - 打印失败时按指数退避重试，超过 `print_max_retries` 后写死信。
+
+用法::
+
+    from print_my_mail import load_config, run, run_once
+
+    run(load_config())       # 持续监听，直到 Ctrl-C 或 SIGTERM
+    run_once(load_config())  # 只轮询一轮后退出
+
+投递语义是 at-least-once：打印成功但还来不及标记已读时进程退出，
+下次会重复打印一次，但不会静默丢通知。
 """
 
 from __future__ import annotations

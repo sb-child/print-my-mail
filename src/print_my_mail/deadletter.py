@@ -1,6 +1,12 @@
 """无法处理的通知死信记录。
 
 每条 JSONL 包含：time（UTC+8）、kind、account、item、reason、details。
+
+格式示例::
+
+    {"time": "2026-11-02T21:00:00+08:00", "kind": "print",
+     "account": "me@example.com", "item": "INBOX UID 123",
+     "reason": "...", "details": {"folder": "INBOX", "uid": "123"}}
 """
 
 from __future__ import annotations

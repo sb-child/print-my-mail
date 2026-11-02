@@ -1,17 +1,57 @@
 """读取项目根目录的 `config.toml`。
 
-`[server]` 支持：
+`config.toml` 示例::
+
+    [server]
+    target = "127.0.0.1:54321"
+    poll_interval = 60
+    print_timeout = 120
+    print_max_retries = 3
+    print_retry_base_delay = 5
+    print_retry_max_delay = 300
+    imap_timeout = 30
+    dead_letter_file = "dead-letter.jsonl"
+    github_fetch_content = true
+
+    [[mail]]
+    user = "your_email@gmail.com"
+    pass = "your_app_password"
+    # host = "imap.gmail.com"
+    # port = 993
+    # folders = ["INBOX"]
+
+    [[github]]
+    pat = "xxxx"
+
+读取配置::
+
+    from print_my_mail import load_config
+
+    config = load_config()
+    print(config.target)
+    for account in config.mail:
+        print(account.user)
+
+`load_config()` 会依次在当前工作目录和项目根目录查找 `config.toml`，
+找不到时使用默认值；也可以显式传入路径：`load_config("path/to/config.toml")`。
+
+`[server]` 字段：
+
 - `target`：gRPC 打印服务器地址；
 - `poll_interval`：轮询间隔；
-- `print_timeout`：等待打印完成的最长时间；
+- `print_timeout`：提交打印和等待打印完成的最长时间；
 - `print_max_retries` / `print_retry_base_delay` / `print_retry_max_delay`：
-  打印失败后的重试策略；
+  打印失败后的指数退避重试策略；
 - `imap_timeout`：IMAP 超时；
 - `dead_letter_file`：死信 JSONL 路径；
 - `github_fetch_content`：是否抓取 GitHub 正文和最新评论。
 
 `[[mail]]` 支持 `user`、`pass`、`host`、`port`、`folders`。
 `[[github]]` 支持 `pat`。
+
+`folders` 默认是 `["INBOX"]`。Gmail 的垃圾邮件文件夹名是 modified UTF-7
+编码（例如 `[Gmail]/&V4NXPpCuTvY-`），必须使用 `print-my-mail folders`
+输出的原始名称。不要监听“所有邮件”，否则归档和已发送邮件会重复打印。
 """
 
 from __future__ import annotations

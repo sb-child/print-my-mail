@@ -1,4 +1,14 @@
-"""用于验证打印机和模板的示例页面。"""
+"""用于验证打印机和模板的示例页面。
+
+用法::
+
+    from print_my_mail import load_config
+    from print_my_mail.client import PrintMyMailClient
+    from print_my_mail.sample import print_test_page
+
+    with PrintMyMailClient(load_config().target) as client:
+        print_test_page(client)
+"""
 
 from __future__ import annotations
 

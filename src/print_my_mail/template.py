@@ -3,6 +3,33 @@
 - 模板从包内 `templates/` 读取，安装后也能使用；
 - 邮件和 GitHub 的时间统一按 UTC+8 输出；
 - GitHub 的每条通知通过 `#item(...)` 生成，支持单独的内容字段。
+
+生成 tar 包::
+
+    from print_my_mail import (
+        GitHubItem,
+        GitHubNotification,
+        make_github_tar,
+        make_mail_tar,
+    )
+    from print_my_mail.timeutil import now
+
+    mail_tar = make_mail_tar(
+        recp="me@example.com",
+        sender="sender@example.com",
+        t=now(),
+        title="邮件标题",
+        sender_name="发件人",
+        content="正文",
+    )
+    github_tar = make_github_tar(
+        now(),
+        [GitHubItem(GitHubNotification("owner/repo", 1, "标题", "issue"))],
+    )
+
+`GitHubItem` 的上下文字段：`reason`、`updated_at`、`url`、
+`latest_comment_url`、`body`、`latest_comment_body`、`content`。
+`content` 默认空，通常由 `PostProcessor` 填写后打印在通知下面。
 """
 
 from __future__ import annotations
@@ -68,7 +95,19 @@ class GitHubNotification:
 
 @dataclass(frozen=True)
 class GitHubItem:
-    """一条 GitHub 通知及打印/后处理上下文。"""
+    """一条 GitHub 通知及打印/后处理上下文。
+
+    字段：
+
+    - `notification`：仓库、编号、标题、类型；
+    - `reason`：GitHub 的通知原因，比如 `mention`、`review_requested`；
+    - `updated_at`：UTC+8 时间；
+    - `url`：通知对应资源的 API 地址；
+    - `latest_comment_url`：最新评论的 API 地址；
+    - `body`：Issue / PR / Release 等资源正文；
+    - `latest_comment_body`：最新评论正文；
+    - `content`：打印在通知下面的文本，默认空，通常由后处理器填写。
+    """
 
     notification: GitHubNotification
     reason: str = ""

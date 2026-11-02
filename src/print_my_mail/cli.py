@@ -1,10 +1,28 @@
 """命令行入口。
 
 命令：
+
 - `print-my-mail`：持续监听并打印；
 - `print-my-mail test`：打印示例页面；
 - `print-my-mail once`：只轮询一轮；
 - `print-my-mail folders`：列出配置邮箱的真实 IMAP 文件夹名。
+
+用法::
+
+    uv run print-my-mail          # 持续监听
+    uv run print-my-mail test     # 打印示例邮件和示例 GitHub 通知
+    uv run print-my-mail once     # 只轮询一轮，便于排障
+    uv run print-my-mail folders  # 列出真实 IMAP 文件夹名
+
+`folders` 输出示例::
+
+    sbchild0@gmail.com:
+      INBOX  \\HasNoChildren
+      [Gmail]/&V4NXPpCuTvY-  \\HasNoChildren \\Junk  ([Gmail]/垃圾邮件)
+      推荐配置: folders = ["INBOX", "[Gmail]/&V4NXPpCuTvY-"]
+
+把“推荐配置”那一行直接复制到 `config.toml` 的 `[[mail]]` 下面即可。
+括号里是解码后的展示名，配置时必须使用左边的原始编码名。
 """
 
 from __future__ import annotations

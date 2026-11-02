@@ -7,6 +7,23 @@
 - `MailItem.html_body` 保留原始 HTML，供 `PostProcessor` 使用；
 - 附件和图片不解析；
 - `folders` 可以配置 INBOX、Spam/Junk 等多个文件夹。
+
+用法::
+
+    from print_my_mail import MailAccount
+    from print_my_mail.mail import MailPoller, list_folders
+
+    account = MailAccount("me@example.com", "password", "imap.example.com")
+
+    for folder in list_folders(account):
+        print(folder.name, folder.flags)
+
+    poller = MailPoller(account)
+    for item in poller.poll():
+        ...  # 打印成功后调用 poller.mark_seen(item)
+
+`poll()` 只有在调用方恢复迭代时才继续处理下一封邮件；打印失败或
+中途退出时，当前邮件会保持未读。
 """
 
 from __future__ import annotations

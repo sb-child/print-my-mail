@@ -1,4 +1,39 @@
-"""dzsrv 的 gRPC 客户端封装。"""
+"""dzsrv 的 gRPC 客户端封装。
+
+用法::
+
+    from print_my_mail import PrintMyMailClient
+    from print_my_mail.template import make_mail_tar
+    from print_my_mail.timeutil import now
+
+    tar = make_mail_tar(
+        recp="me@example.com",
+        sender="sender@example.com",
+        t=now(),
+        title="标题",
+        sender_name="发件人",
+        content="正文",
+    )
+    with PrintMyMailClient("127.0.0.1:54321") as client:
+        job_id = client.print_typst(tar, timeout=30)
+        status = client.wait(job_id, timeout=120)
+        print(status.job_status, status.printer_status)
+
+默认连接明文 gRPC；也可以传入已有的 `grpc.Channel`（例如带 TLS 或
+拦截器的 channel）::
+
+    import grpc
+
+    channel = grpc.secure_channel(target, credentials)
+    client = PrintMyMailClient(channel=channel)
+
+打印服务由 dz-print 提供，启动示例::
+
+    cargo r -r --bin dzserver /tmp/dzserver 127.0.0.1:54321 \\
+        --font /usr/local/share/fonts/LXGWWenKaiGB/LXGWWenKaiGB-Light.ttf \\
+        --font /usr/local/share/fonts/LXGWWenKaiGB/LXGWWenKaiGB-Medium.ttf \\
+        --font /usr/local/share/fonts/LXGWWenKaiGB/LXGWWenKaiGB-Regular.ttf
+"""
 
 from __future__ import annotations
 

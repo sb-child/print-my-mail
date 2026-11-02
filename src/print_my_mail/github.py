@@ -5,6 +5,18 @@
 - 通知类型映射为 issue / pr / release / commit 等展示类型；
 - Release 右上角显示 tag 版本，Commit 显示短 SHA；
 - `GitHubItem` 保留正文、最新评论正文、reason 等上下文给 PostProcessor。
+
+用法::
+
+    from print_my_mail.config import GitHubAccount
+    from print_my_mail.github import GitHubPoller
+
+    poller = GitHubPoller(GitHubAccount("github_pat"))
+    for digest in poller.poll():
+        ...  # 打印 digest；迭代恢复时会把这一批通知标记为已读
+
+`config.toml` 中 `github_fetch_content = false` 时，只请求判断通知类型
+所需的状态 / tag / SHA，不保留正文，也不请求最新评论。
 """
 
 from __future__ import annotations

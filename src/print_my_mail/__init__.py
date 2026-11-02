@@ -1,3 +1,14 @@
+"""print-my-mail：把未读邮件和 GitHub 通知打印成小票。
+
+快速使用::
+
+    from print_my_mail import load_config, run
+
+    run(load_config())
+
+各模块的配置、命令行、后处理和模板用法见对应文件开头的文档注释。
+"""
+
 from .cli import main
 from .client import DEFAULT_TARGET, PrintMyMailClient
 from .config import (
