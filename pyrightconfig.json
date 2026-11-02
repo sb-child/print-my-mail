@@ -1,0 +1,10 @@
+{
+  "include": ["src", "scripts"],
+  "exclude": ["**/__pycache__"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.14",
+  "extraPaths": ["src"],
+  "reportMissingModuleSource": "none",
+  "ignore": ["src/print_my_mail/proto"]
+}

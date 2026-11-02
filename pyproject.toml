@@ -1,0 +1,19 @@
+[project]
+name = "print-my-mail"
+version = "0.1.0"
+description = "通过打印一张小票的方式提醒你来邮件了"
+readme = "README.md"
+authors = [{ name = "sbchild", email = "sbchild0@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = ["grpcio>=1.85.1", "protobuf>=7.36.2"]
+license = "MIT"
+
+[project.scripts]
+print-my-mail = "print_my_mail:main"
+
+[build-system]
+requires = ["uv_build>=0.12.24,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["grpcio-tools>=1.85.1", "mypy-protobuf>=5.1.0"]
