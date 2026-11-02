@@ -2,6 +2,8 @@
 
 通过打印一张小票提醒你有新邮件或 GitHub 通知。程序会轮询配置的 IMAP 邮箱和 GitHub 账户，把未读内容提交给 dz-print，并在确认打印成功后标记为已读。
 
+![image](./shot.png)
+
 ## 快速开始
 
 1. 复制 `config.toml.example` 为 `config.toml`，填写邮箱应用专用密码和 GitHub PAT。
