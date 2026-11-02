@@ -14,6 +14,8 @@ print_retry_base_delay = 5
 print_retry_max_delay = 300
 # IMAP 连接和操作超时（秒）
 imap_timeout = 30
+# 只打印启动前多少秒以内到达的邮件；更早的未读邮件跳过
+mail_max_age = 60
 # 永久失败通知的死信文件
 dead_letter_file = "dead-letter.jsonl"
 # 是否抓取 GitHub 通知正文和最新评论
@@ -34,3 +36,21 @@ pass = "your_app_password"
 [[github]]
 # https://github.com/settings/tokens/new，选 notifications, repo
 pat = "xxxx"
+
+# 可选：用 OpenAI 兼容接口生成短摘要
+# 启用后邮件正文会替换成摘要，GitHub 通知会带上每条摘要
+[ai]
+enabled = false
+# 可以写 base URL，也可以直接写完整的 /chat/completions 地址
+base_url = "https://api.openai.com/v1"
+# Bearer token；本地服务不需要鉴权时可以留空
+token = ""
+model = "gpt-4o-mini"
+# 单次请求超时（秒）
+timeout = 30
+# 回答最多多少个字符
+max_chars = 100
+# 发送给模型的正文最多多少个字符
+max_input_chars = 4000
+# 拼接进提示词的问题
+question = "用不超过 100 字总结内容，并说明是否需要我处理。"

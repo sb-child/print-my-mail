@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from email.message import EmailMessage
-from datetime import timedelta
+from email.utils import format_datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from print_my_mail.config import MailAccount
 from print_my_mail.deadletter import DeadLetterStore
 from print_my_mail.mail import (
     MailPoller,
+    _imap_date,
     _parse_list_line,
     _parse_message,
     decode_imap_utf7,
@@ -17,10 +19,16 @@ from print_my_mail.mail import (
 )
 
 
-def _raw(subject: str = "subject", body: str = "body") -> bytes:
+def _raw(
+    subject: str = "subject",
+    body: str = "body",
+    date: str | None = None,
+) -> bytes:
     message = EmailMessage()
     message["From"] = "sender@example.com"
     message["Subject"] = subject
+    if date:
+        message["Date"] = date
     message.set_content(body)
     return message.as_bytes()
 
@@ -153,6 +161,10 @@ def test_decode_imap_utf7() -> None:
     assert decode_imap_utf7("&!bad-") == "&!bad-"
 
 
+def test_imap_date_format() -> None:
+    assert _imap_date(datetime(2026, 11, 2)) == "02-Nov-2026"
+
+
 def test_list_folders(monkeypatch: pytest.MonkeyPatch) -> None:
     class ListIMAP(FakeIMAP):
         def list(self) -> tuple[str, list[bytes]]:
@@ -196,3 +208,44 @@ def test_fetch_error_does_not_mark_seen(tmp_path: Path, monkeypatch: pytest.Monk
     with pytest.raises(Exception, match="失败"):
         list(poller.poll())
     assert not any(event[0] == "store" for event in fake.events)
+
+
+def test_recent_mail_is_printed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    date = format_datetime(
+        datetime.now(timezone.utc) - timedelta(seconds=10)
+    )
+    fake = FakeIMAP(_raw(date=date))
+    poller = MailPoller(
+        MailAccount("me@example.com", "pw", "imap.example.com"),
+        max_age=60,
+        dead_letter=DeadLetterStore(tmp_path / "dead.jsonl"),
+    )
+    monkeypatch.setattr("print_my_mail.mail.imaplib.IMAP4_SSL", lambda *a, **k: fake)
+
+    assert [item.subject for item in poller.poll()] == ["subject"]
+
+
+def test_old_mail_is_skipped_without_marking_seen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    date = format_datetime(
+        datetime.now(timezone.utc) - timedelta(minutes=2)
+    )
+    fake = FakeIMAP(_raw(date=date))
+    poller = MailPoller(
+        MailAccount("me@example.com", "pw", "imap.example.com"),
+        max_age=60,
+        dead_letter=DeadLetterStore(tmp_path / "dead.jsonl"),
+    )
+    monkeypatch.setattr("print_my_mail.mail.imaplib.IMAP4_SSL", lambda *a, **k: fake)
+
+    assert list(poller.poll()) == []
+    assert not any(event[0] == "store" for event in fake.events)
+
+    fetches = sum(1 for event in fake.events if event[0] == "fetch")
+    assert list(poller.poll()) == []
+    assert sum(1 for event in fake.events if event[0] == "fetch") == fetches

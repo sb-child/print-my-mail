@@ -9,9 +9,11 @@
 各模块的配置、命令行、后处理和模板用法见对应文件开头的文档注释。
 """
 
+from .ai import OpenAIPostProcessor
 from .cli import main
 from .client import DEFAULT_TARGET, PrintMyMailClient
 from .config import (
+    AIConfig,
     Config,
     GitHubAccount,
     MailAccount,
@@ -33,6 +35,7 @@ from .template import (
 )
 
 __all__ = [
+    "AIConfig",
     "Config",
     "DEFAULT_TARGET",
     "GitHubAccount",
@@ -43,6 +46,7 @@ __all__ = [
     "MailAccount",
     "MailFolder",
     "MailItem",
+    "OpenAIPostProcessor",
     "PostProcessor",
     "PrintMyMailClient",
     "Runner",

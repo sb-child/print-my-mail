@@ -1,4 +1,4 @@
-#set page(width: 48mm, height: auto, margin: (top: 5mm, bottom: 5mm, left: 0.2mm, right: 0mm))
+#set page(width: 48mm, height: auto, margin: (top: 1mm, bottom: 1mm, left: 0.2mm, right: 0mm))
 #set text(font: "LXGW WenKai GB", size: 8pt)
 #let wrap(x) = {
   x.codepoints().join(sym.zws)
@@ -32,7 +32,7 @@
 
 #text(
   "{{content}}",
-  weight: "light",
+  weight: "bold",
   size: 6pt,
 )
 

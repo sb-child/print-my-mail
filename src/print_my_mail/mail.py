@@ -6,7 +6,9 @@
 - `MailItem.body` 是用于打印的纯文本；
 - `MailItem.html_body` 保留原始 HTML，供 `PostProcessor` 使用；
 - 附件和图片不解析；
-- `folders` 可以配置 INBOX、Spam/Junk 等多个文件夹。
+- `folders` 可以配置 INBOX、Spam/Junk 等多个文件夹；
+- 启动时只处理 `max_age` 秒以内到达的邮件，更早的未读邮件跳过，
+  不打印也不修改已读状态。
 
 用法::
 
@@ -34,10 +36,11 @@ import email
 import email.policy
 import imaplib
 import logging
+import math
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.header import decode_header, make_header
 from email.message import EmailMessage, MIMEPart
 from email.utils import parseaddr, parsedate_to_datetime
@@ -52,6 +55,22 @@ from .timeutil import now, to_utc8
 log = logging.getLogger(__name__)
 
 DEFAULT_IMAP_TIMEOUT = 30.0
+DEFAULT_MAIL_MAX_AGE = 60.0
+
+_IMAP_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
 
 _HTML_BLOCK_TAGS = frozenset({"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4"})
 _LIST_RE = re.compile(
@@ -99,14 +118,21 @@ class MailPoller:
         account: MailAccount,
         *,
         timeout: float = DEFAULT_IMAP_TIMEOUT,
+        max_age: float = DEFAULT_MAIL_MAX_AGE,
         dead_letter: DeadLetterStore | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("IMAP 超时时间必须大于 0")
+        if not math.isfinite(max_age) or max_age <= 0:
+            raise ValueError("邮件最大年龄必须是大于 0 的有限数字")
         self.account = account
         self.timeout = timeout
+        self.max_age = max_age
         self._dead_letter = dead_letter
         self._imap: imaplib.IMAP4_SSL | None = None
+        self._cutoff = now() - timedelta(seconds=max_age)
+        self._skipped: dict[str, set[str]] = {}
+        self._cutoff_logged = False
 
     def poll(self) -> Iterator[MailItem]:
         """
@@ -114,7 +140,17 @@ class MailPoller:
 
         调用方打印成功并确认后继续迭代，才会把这封邮件标记为已读；
         如果中途抛异常，未打印的邮件会保持未读状态。
+
+        `max_age` 之前的未读邮件会跳过并缓存，不打印、也不修改已读状态。
         """
+        if not self._cutoff_logged:
+            log.info(
+                "邮箱 %s 只处理 %s 之后到达的邮件",
+                self.account.user,
+                self._cutoff.isoformat(timespec="seconds"),
+            )
+            self._cutoff_logged = True
+
         try:
             with imaplib.IMAP4_SSL(
                 self.account.host,
@@ -135,7 +171,24 @@ class MailPoller:
                             )
                             continue
 
-                        status, data = imap.uid("search", "UNSEEN")
+                        search_date = _imap_date(
+                            self._cutoff - timedelta(days=1)
+                        )
+                        status, data = imap.uid(
+                            "search",
+                            "UNSEEN",
+                            "SINCE",
+                            search_date,
+                        )
+                        if status != "OK":
+                            log.warning(
+                                "邮箱 %s 的文件夹 %s 不支持 SINCE 搜索，"
+                                "改为搜索全部未读: %s",
+                                self.account.user,
+                                folder,
+                                status,
+                            )
+                            status, data = imap.uid("search", "UNSEEN")
                         if status != "OK":
                             log.warning(
                                 "搜索邮箱 %s 的文件夹 %s 失败: %s",
@@ -152,12 +205,25 @@ class MailPoller:
                             )
                             continue
 
+                        skipped = self._skipped.setdefault(folder, set())
                         for raw_uid in data[0].split():
                             uid = raw_uid.decode()
+                            if uid in skipped:
+                                continue
                             item = self._fetch(imap, folder, uid)
                             if item is None:
                                 # 无法解析的邮件写日志后标记，避免每一轮都重复失败。
                                 self._mark_seen(imap, uid)
+                                continue
+                            if item.date < self._cutoff:
+                                skipped.add(uid)
+                                log.debug(
+                                    "跳过启动前的邮件 %s/%s UID %s (%s)",
+                                    self.account.user,
+                                    folder,
+                                    uid,
+                                    item.date.isoformat(timespec="seconds"),
+                                )
                                 continue
                             yield item
                 finally:
@@ -287,6 +353,11 @@ def list_folders(
         raise
     except (imaplib.IMAP4.error, OSError) as exc:
         raise MailError(f"读取邮箱 {account.user} 失败: {exc}") from exc
+
+
+def _imap_date(value: datetime) -> str:
+    """把日期格式化成 IMAP SEARCH 需要的 `02-Nov-2026`。"""
+    return f"{value.day:02d}-{_IMAP_MONTHS[value.month - 1]}-{value.year}"
 
 
 def _parse_list_line(line: bytes) -> MailFolder | None:

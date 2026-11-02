@@ -1,7 +1,8 @@
 """打印前的后处理钩子。
 
-以后可以在 `TransparentPostProcessor` 旁边实现一个接 AI 的版本，
-例如总结邮件正文、给 GitHub 通知生成摘要。
+如果只需要“摘要成 100 字以内”，直接用内置的
+`print_my_mail.ai.OpenAIPostProcessor`；需要自定义逻辑时再实现本协议。例如
+可以在 `TransparentPostProcessor` 旁边实现一个接 AI 的版本。
 
 实现示例::
 

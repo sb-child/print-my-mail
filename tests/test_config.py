@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from print_my_mail import GitHubAccount, MailAccount, load_config
+from print_my_mail import (
+    AIConfig,
+    GitHubAccount,
+    MailAccount,
+    load_config,
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -24,6 +29,7 @@ print_max_retries = 2
 print_retry_base_delay = 1
 print_retry_max_delay = 10
 imap_timeout = 15
+mail_max_age = 30
 dead_letter_file = "dead.jsonl"
 github_fetch_content = false
 
@@ -34,6 +40,16 @@ folders = ["INBOX", "[Gmail]/Spam"]
 
 [[github]]
 pat = "token"
+
+[ai]
+enabled = true
+base_url = "https://api.example.com/v1"
+token = "sk-test"
+model = "gpt-test"
+timeout = 12
+max_chars = 80
+max_input_chars = 2000
+question = "需要我处理吗？"
 """,
     )
 
@@ -46,11 +62,20 @@ pat = "token"
     assert config.print_retry_base_delay == 1
     assert config.print_retry_max_delay == 10
     assert config.imap_timeout == 15
+    assert config.mail_max_age == 30
     assert config.dead_letter_file == "dead.jsonl"
     assert config.github_fetch_content is False
     assert config.mail[0].user == "a@example.com"
     assert config.mail[0].folders == ("INBOX", "[Gmail]/Spam")
     assert config.github[0].pat == "token"
+    assert config.ai.enabled is True
+    assert config.ai.base_url == "https://api.example.com/v1"
+    assert config.ai.token == "sk-test"
+    assert config.ai.model == "gpt-test"
+    assert config.ai.timeout == 12
+    assert config.ai.max_chars == 80
+    assert config.ai.max_input_chars == 2000
+    assert config.ai.question == "需要我处理吗？"
 
 
 def test_defaults(tmp_path: Path) -> None:
@@ -59,8 +84,12 @@ def test_defaults(tmp_path: Path) -> None:
     assert config.poll_interval == 60
     assert config.print_timeout == 120
     assert config.imap_timeout == 30
+    assert config.mail_max_age == 60
     assert config.mail == ()
     assert config.github == ()
+    assert config.ai.enabled is False
+    assert config.ai.max_chars == 100
+    assert config.ai.max_input_chars == 4000
 
 
 @pytest.mark.parametrize(
@@ -74,6 +103,8 @@ def test_defaults(tmp_path: Path) -> None:
         "[server]\nprint_retry_base_delay = 10\nprint_retry_max_delay = 5\n",
         '[server]\ngithub_fetch_content = "yes"\n',
         "[server]\nimap_timeout = inf\n",
+        "[server]\nmail_max_age = 0\n",
+        "[server]\nmail_max_age = nan\n",
         '[server]\ntarget = ""\n',
         '[server]\ndead_letter_file = ""\n',
         '[[mail]]\nuser = "a@example.com"\npass = "x"\nport = 0\n',
@@ -81,6 +112,13 @@ def test_defaults(tmp_path: Path) -> None:
         '[[mail]]\nuser = "a@example.com"\npass = "x"\nfolders = []\n',
         '[[mail]]\nuser = "a@example.com"\npass = "x"\nfolders = [""]\n',
         '[[github]]\npat = ""\n',
+        "[ai]\nenabled = true\n",
+        '[ai]\nenabled = true\nbase_url = "https://x"\nmodel = ""\n',
+        '[ai]\nenabled = true\nbase_url = "https://x"\nquestion = ""\n',
+        '[ai]\nenabled = true\nbase_url = "https://x"\nmax_chars = 0\n',
+        '[ai]\nenabled = true\nbase_url = "https://x"\nmax_input_chars = -1\n',
+        '[ai]\nenabled = true\nbase_url = "https://x"\ntimeout = 0\n',
+        '[ai]\nenabled = "yes"\n',
     ],
 )
 def test_invalid_values(tmp_path: Path, text: str) -> None:
@@ -91,5 +129,11 @@ def test_invalid_values(tmp_path: Path, text: str) -> None:
 def test_secrets_are_not_in_repr() -> None:
     account = MailAccount("u", "mail-secret", "imap.example.com")
     github = GitHubAccount("gh-secret")
+    ai = AIConfig(
+        enabled=True,
+        base_url="https://api.example.com/v1",
+        token="sk-secret",
+    )
     assert "mail-secret" not in repr(account)
     assert "gh-secret" not in repr(github)
+    assert "sk-secret" not in repr(ai)

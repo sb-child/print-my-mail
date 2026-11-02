@@ -13,7 +13,7 @@ dz-print/target/release/dzserver /tmp/dzserver '127.0.0.1:54321' --font /usr/loc
 
 3. 在当前目录执行 `uv run print-my-mail` 开始监听；`uv run print-my-mail test` 打印示例，`once` 只轮询一轮，`folders` 查看真实 IMAP 文件夹名。
 
-第一次运行前建议用 `folders` 确认文件夹原始名称，并且只保留 INBOX 和垃圾邮件文件夹，避免把归档或已发送邮件重复打印。
+第一次运行前建议用 `folders` 确认文件夹原始名称，并且只保留 INBOX 和垃圾邮件文件夹，避免把归档或已发送邮件重复打印。程序启动时只处理最近 1 分钟内到达的邮件，更早的未读邮件会跳过，不会被打印或标记为已读。
 
 ## 文档位置
 
@@ -23,6 +23,7 @@ dz-print/target/release/dzserver /tmp/dzserver '127.0.0.1:54321' --font /usr/loc
 - 命令行：`src/print_my_mail/cli.py`
 - 后台轮询与投递语义：`src/print_my_mail/runner.py`
 - 打印前处理、接 AI 摘要的入口：`src/print_my_mail/postprocess.py`
+- OpenAI 兼容接口摘要：`src/print_my_mail/ai.py`
 - 邮件轮询：`src/print_my_mail/mail.py`
 - GitHub 轮询：`src/print_my_mail/github.py`
 - Typst 模板打包：`src/print_my_mail/template.py`

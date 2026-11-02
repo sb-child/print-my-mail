@@ -18,6 +18,7 @@ from print_my_mail import (
     MailItem,
 )
 from print_my_mail.client import print_succeeded
+from print_my_mail.mail import MailPoller
 from print_my_mail.proto import dzsrv_pb2
 from print_my_mail.runner import Runner
 
@@ -235,3 +236,14 @@ def test_processor_error_is_isolated(tmp_path: Path) -> None:
     runner.poll(FakePrinter())  # 不应抛出
     assert _mail_fake(runner).seen == []
     assert not _github_fake(runner).marked
+
+
+def test_mail_poller_uses_max_age(tmp_path: Path) -> None:
+    config = Config(
+        dead_letter_file=str(tmp_path / "dead.jsonl"),
+        mail_max_age=30,
+        mail=(MailAccount("me@example.com", "pw", "imap.example.com"),),
+    )
+    runner = Runner(config)
+    poller = cast(MailPoller, runner._mail_pollers[0])
+    assert poller.max_age == 30

@@ -10,6 +10,7 @@
     print_retry_base_delay = 5
     print_retry_max_delay = 300
     imap_timeout = 30
+    mail_max_age = 60
     dead_letter_file = "dead-letter.jsonl"
     github_fetch_content = true
 
@@ -22,6 +23,16 @@
 
     [[github]]
     pat = "xxxx"
+
+    [ai]
+    enabled = true
+    base_url = "https://api.openai.com/v1"
+    token = "sk-..."
+    model = "gpt-4o-mini"
+    timeout = 30
+    max_chars = 100
+    max_input_chars = 4000
+    question = "用不超过 100 字总结内容，并说明是否需要我处理。"
 
 读取配置::
 
@@ -43,11 +54,24 @@
 - `print_max_retries` / `print_retry_base_delay` / `print_retry_max_delay`：
   打印失败后的指数退避重试策略；
 - `imap_timeout`：IMAP 超时；
+- `mail_max_age`：只打印启动前多少秒以内到达的邮件，更早的未读邮件跳过；
 - `dead_letter_file`：死信 JSONL 路径；
 - `github_fetch_content`：是否抓取 GitHub 正文和最新评论。
 
 `[[mail]]` 支持 `user`、`pass`、`host`、`port`、`folders`。
 `[[github]]` 支持 `pat`。
+
+`[ai]` 字段：
+
+- `enabled`：是否启用 AI 摘要；
+- `base_url`：OpenAI 兼容接口地址，可以写 base URL 或完整的
+  `/chat/completions` 地址；
+- `token`：Bearer token，留空则不发送 Authorization 头（本地服务）；
+- `model`：模型名；
+- `timeout`：单次请求超时；
+- `max_chars`：回答的最大字符数，默认 100；
+- `max_input_chars`：发送给模型的正文最大字符数；
+- `question`：拼接进提示词的问题，默认要求 100 字内总结。
 
 `folders` 默认是 `["INBOX"]`。Gmail 的垃圾邮件文件夹名是 modified UTF-7
 编码（例如 `[Gmail]/&V4NXPpCuTvY-`），必须使用 `print-my-mail folders`
@@ -69,7 +93,9 @@ log = logging.getLogger(__name__)
 
 CONFIG_NAME = "config.toml"
 
-_TOP_LEVEL_KEYS = frozenset({"server", "mail", "github"})
+DEFAULT_AI_QUESTION = "用不超过 100 字总结内容，并说明是否需要我处理。"
+
+_TOP_LEVEL_KEYS = frozenset({"server", "mail", "github", "ai"})
 _SERVER_KEYS = frozenset(
     {
         "target",
@@ -79,12 +105,25 @@ _SERVER_KEYS = frozenset(
         "print_retry_base_delay",
         "print_retry_max_delay",
         "imap_timeout",
+        "mail_max_age",
         "dead_letter_file",
         "github_fetch_content",
     }
 )
 _MAIL_KEYS = frozenset({"user", "pass", "host", "port", "folders"})
 _GITHUB_KEYS = frozenset({"pat"})
+_AI_KEYS = frozenset(
+    {
+        "enabled",
+        "base_url",
+        "token",
+        "model",
+        "timeout",
+        "max_chars",
+        "max_input_chars",
+        "question",
+    }
+)
 
 _IMAP_HOSTS = {
     "gmail.com": "imap.gmail.com",
@@ -135,6 +174,39 @@ class GitHubAccount:
 
 
 @dataclass(frozen=True)
+class AIConfig:
+    """OpenAI 兼容接口的摘要配置。
+
+    `enabled = false` 时完全不发请求。启用后 `base_url` 和 `model` 必填；
+    `base_url` 可以写 base URL，也可以直接写完整的 `/chat/completions` 地址。
+    """
+
+    enabled: bool = False
+    base_url: str = ""
+    token: str = field(default="", repr=False)
+    model: str = "gpt-4o-mini"
+    timeout: float = 30.0
+    max_chars: int = 100
+    max_input_chars: int = 4000
+    question: str = DEFAULT_AI_QUESTION
+
+    def __post_init__(self) -> None:
+        if not self.enabled:
+            return
+        if not self.base_url.strip():
+            raise ValueError("ai.enabled = true 时 ai.base_url 不能为空")
+        if not self.model.strip():
+            raise ValueError("ai.enabled = true 时 ai.model 不能为空")
+        if not self.question.strip():
+            raise ValueError("ai.question 不能为空")
+        if self.max_chars <= 0:
+            raise ValueError("ai.max_chars 必须大于 0")
+        if self.max_input_chars <= 0:
+            raise ValueError("ai.max_input_chars 必须大于 0")
+        _require_positive_finite(self.timeout, "ai.timeout")
+
+
+@dataclass(frozen=True)
 class Config:
     """`config.toml` 中与程序相关的配置项。"""
 
@@ -145,8 +217,10 @@ class Config:
     print_retry_base_delay: float = 5.0
     print_retry_max_delay: float = 300.0
     imap_timeout: float = 30.0
+    mail_max_age: float = 60.0
     dead_letter_file: str = "dead-letter.jsonl"
     github_fetch_content: bool = True
+    ai: AIConfig = field(default_factory=AIConfig)
     mail: tuple[MailAccount, ...] = ()
     github: tuple[GitHubAccount, ...] = ()
 
@@ -160,6 +234,7 @@ class Config:
         _require_positive_finite(self.poll_interval, "server.poll_interval")
         _require_positive_finite(self.print_timeout, "server.print_timeout")
         _require_positive_finite(self.imap_timeout, "server.imap_timeout")
+        _require_positive_finite(self.mail_max_age, "server.mail_max_age")
         _require_positive_finite(
             self.print_retry_base_delay,
             "server.print_retry_base_delay",
@@ -193,6 +268,9 @@ def load_config(path: str | Path | None = None) -> Config:
     _warn_unknown(data, _TOP_LEVEL_KEYS, "顶层")
     _warn_unknown(server, _SERVER_KEYS, "[server]")
 
+    ai_table = _table(data, "ai")
+    _warn_unknown(ai_table, _AI_KEYS, "[ai]")
+
     mail_items = _array_of_tables(data, "mail")
     github_items = _array_of_tables(data, "github")
     for index, item in enumerate(mail_items, start=1):
@@ -221,10 +299,12 @@ def load_config(path: str | Path | None = None) -> Config:
         ),
         print_retry_max_delay=_get_float(server, "print_retry_max_delay", 300.0),
         imap_timeout=_get_float(server, "imap_timeout", 30.0),
+        mail_max_age=_get_float(server, "mail_max_age", 60.0),
         dead_letter_file=_get_str(
             server, "dead_letter_file", "dead-letter.jsonl"
         ),
         github_fetch_content=_get_bool(server, "github_fetch_content", True),
+        ai=_ai_config(ai_table),
         mail=mail,
         github=github,
     )
@@ -350,6 +430,19 @@ def _mail_account(item: dict[str, Any], index: int) -> MailAccount:
         host=_get_str(item, "host", _default_imap_host(user)),
         port=_get_int(item, "port", 993),
         folders=_get_str_list(item, "folders", ("INBOX",)),
+    )
+
+
+def _ai_config(data: dict[str, Any]) -> AIConfig:
+    return AIConfig(
+        enabled=_get_bool(data, "enabled", False),
+        base_url=_get_str(data, "base_url", ""),
+        token=_get_str(data, "token", ""),
+        model=_get_str(data, "model", "gpt-4o-mini"),
+        timeout=_get_float(data, "timeout", 30.0),
+        max_chars=_get_int(data, "max_chars", 100),
+        max_input_chars=_get_int(data, "max_input_chars", 4000),
+        question=_get_str(data, "question", DEFAULT_AI_QUESTION),
     )
 
 
