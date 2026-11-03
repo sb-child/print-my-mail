@@ -13,6 +13,7 @@
     uv run print-my-mail test     # 打印示例邮件和示例 GitHub 通知
     uv run print-my-mail once     # 只轮询一轮，便于排障
     uv run print-my-mail folders  # 列出真实 IMAP 文件夹名
+    uv run print-my-mail -v once  # 输出调试日志（-v 可放在命令前后）
 
 `folders` 输出示例::
 
@@ -32,28 +33,62 @@ import logging
 from collections.abc import Sequence
 
 from .client import PrintMyMailClient
-from .config import Config, load_config
+from .config import Config, find_config, load_config
 from .mail import MailError, list_folders
 from .runner import run, run_once
 from .sample import print_test_page
 
+log = logging.getLogger(__name__)
+
 
 def main(argv: Sequence[str] | None = None) -> None:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="输出调试日志",
+    )
     parser = argparse.ArgumentParser(
         prog="print-my-mail",
         description="通过打印小票提醒你有新邮件或 GitHub 通知",
+        parents=[common],
     )
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("test", help="打印一封示例邮件和示例 GitHub 通知")
-    subparsers.add_parser("once", help="轮询一轮后退出")
-    subparsers.add_parser("folders", help="列出配置邮箱的 IMAP 文件夹")
+    subparsers.add_parser(
+        "test",
+        parents=[common],
+        help="打印一封示例邮件和示例 GitHub 通知",
+    )
+    subparsers.add_parser(
+        "once",
+        parents=[common],
+        help="轮询一轮后退出",
+    )
+    subparsers.add_parser(
+        "folders",
+        parents=[common],
+        help="列出配置邮箱的 IMAP 文件夹",
+    )
 
     args = parser.parse_args(argv)
+    verbose = getattr(args, "verbose", False)
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        level=logging.DEBUG if verbose else logging.INFO,
+        format=(
+            "%(asctime)s %(levelname)-7s "
+            "[%(threadName)s] %(name)s: %(message)s"
+        ),
     )
-    config = load_config()
+    log.info("命令: %s", args.command or "run")
+    config_path = find_config()
+    log.info("配置文件: %s", config_path or "未找到，使用默认配置")
+    try:
+        config = load_config()
+    except (ValueError, FileNotFoundError) as exc:
+        log.error("加载配置失败: %s", exc)
+        raise SystemExit(1) from None
 
     if args.command == "test":
         _print_test(config)

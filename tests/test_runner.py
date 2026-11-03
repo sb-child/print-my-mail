@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import tarfile
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,9 @@ import grpc
 import pytest
 
 from print_my_mail import (
+    AIConfig,
     Config,
+    GitHubAccount,
     GitHubDigest,
     GitHubItem,
     GitHubNotification,
@@ -61,6 +64,7 @@ class FakeMailPoller:
 
 class FakeGitHubPoller:
     def __init__(self) -> None:
+        self.label = "GitHub #1"
         self.poll_interval = 60.0
         self.marked = False
 
@@ -247,3 +251,44 @@ def test_mail_poller_uses_max_age(tmp_path: Path) -> None:
     runner = Runner(config)
     poller = cast(MailPoller, runner._mail_pollers[0])
     assert poller.max_age == 30
+
+
+def test_github_poller_uses_config_interval(tmp_path: Path) -> None:
+    config = Config(
+        dead_letter_file=str(tmp_path / "dead.jsonl"),
+        github_poll_interval=120,
+        github=(GitHubAccount("pat"),),
+    )
+    runner = Runner(config)
+    assert runner._github_pollers[0].poll_interval == 120
+
+
+def test_startup_summary_hides_secrets(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = Config(
+        dead_letter_file=str(tmp_path / "dead.jsonl"),
+        mail=(
+            MailAccount(
+                "me@example.com",
+                "mail-secret",
+                "imap.example.com",
+            ),
+        ),
+        ai=AIConfig(
+            enabled=True,
+            base_url="https://api.example.com/v1",
+            token="sk-secret",
+        ),
+    )
+    runner = Runner(config)
+
+    with caplog.at_level(logging.INFO):
+        runner._log_summary()
+
+    text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "me@example.com" in text
+    assert "api.example.com" in text
+    assert "mail-secret" not in text
+    assert "sk-secret" not in text

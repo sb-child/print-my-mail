@@ -178,16 +178,30 @@ class MailPoller:
             )
             self._cutoff_logged = True
 
+        new_count = 0
+        skipped_total = 0
         try:
+            log.debug(
+                "连接邮箱 %s (%s:%d)",
+                self.account.user,
+                self.account.host,
+                self.account.port,
+            )
             with imaplib.IMAP4_SSL(
                 self.account.host,
                 self.account.port,
                 timeout=self.timeout,
             ) as imap:
                 imap.login(self.account.user, self.account.password)
+                log.debug("登录成功: %s", self.account.user)
                 self._imap = imap
                 try:
                     for folder in self.account.folders:
+                        log.debug(
+                            "选择文件夹: %s/%s",
+                            self.account.user,
+                            folder,
+                        )
                         status, _ = imap.select(folder)
                         if status != "OK":
                             log.warning(
@@ -233,6 +247,14 @@ class MailPoller:
                             continue
 
                         skipped = self._skipped.setdefault(folder, set())
+                        folder_skipped = 0
+                        folder_new = 0
+                        log.debug(
+                            "文件夹 %s 未读 %d 封（SINCE %s）",
+                            folder,
+                            len(data[0].split()),
+                            search_date,
+                        )
                         for raw_uid in data[0].split():
                             uid = raw_uid.decode()
                             if uid in skipped:
@@ -240,10 +262,11 @@ class MailPoller:
                             item = self._fetch(imap, folder, uid)
                             if item is None:
                                 # 无法解析的邮件写日志后标记，避免每一轮都重复失败。
-                                self._mark_seen(imap, uid)
+                                self._mark_seen(imap, folder, uid)
                                 continue
                             if item.date < self._cutoff:
                                 skipped.add(uid)
+                                folder_skipped += 1
                                 log.debug(
                                     "跳过启动前的邮件 %s/%s UID %s (%s)",
                                     self.account.user,
@@ -252,13 +275,39 @@ class MailPoller:
                                     item.date.isoformat(timespec="seconds"),
                                 )
                                 continue
+                            folder_new += 1
+                            new_count += 1
                             yield item
+
+                        skipped_total += folder_skipped
+                        if folder_skipped:
+                            log.info(
+                                "邮箱 %s 文件夹 %s：跳过 %d 封启动前的邮件",
+                                self.account.user,
+                                folder,
+                                folder_skipped,
+                            )
+                        log.debug(
+                            "文件夹 %s 本轮新邮件 %d 封",
+                            folder,
+                            folder_new,
+                        )
                 finally:
                     self._imap = None
         except MailError:
             raise
         except (imaplib.IMAP4.error, OSError) as exc:
             raise MailError(f"读取邮箱 {self.account.user} 失败: {exc}") from exc
+        finally:
+            if new_count or skipped_total:
+                log.info(
+                    "邮箱 %s 本轮完成：新邮件 %d 封，跳过历史 %d 封",
+                    self.account.user,
+                    new_count,
+                    skipped_total,
+                )
+            else:
+                log.debug("邮箱 %s 本轮没有新邮件", self.account.user)
 
     def _fetch(
         self,
@@ -266,10 +315,17 @@ class MailPoller:
         folder: str,
         uid: str,
     ) -> MailItem | None:
+        log.debug(
+            "拉取邮件: %s/%s UID %s",
+            self.account.user,
+            folder,
+            uid,
+        )
         status, data = imap.uid("fetch", uid, "(RFC822)")
         if status != "OK":
             raise MailError(
-                f"读取邮箱 {self.account.user} 的邮件 UID {uid} 失败: {status}"
+                f"读取邮箱 {self.account.user} 的文件夹 {folder} "
+                f"邮件 UID {uid} 失败: {status}"
             )
 
         for part in data:
@@ -329,27 +385,41 @@ class MailPoller:
                 item.uid,
             )
             return
-        self._mark_seen(self._imap, item.uid)
+        self._mark_seen(self._imap, item.folder, item.uid)
 
-    def _mark_seen(self, imap: imaplib.IMAP4_SSL, uid: str) -> None:
+    def _mark_seen(
+        self,
+        imap: imaplib.IMAP4_SSL,
+        folder: str,
+        uid: str,
+    ) -> None:
         try:
             status, data = imap.uid("store", uid, "+FLAGS", "\\Seen")
         except (imaplib.IMAP4.error, OSError) as exc:
             log.warning(
-                "标记邮箱 %s 的邮件 UID %s 为已读失败: %s",
+                "标记邮箱 %s 的 %s UID %s 为已读失败: %s",
                 self.account.user,
+                folder,
                 uid,
                 exc,
             )
             return
         if status != "OK":
             log.warning(
-                "标记邮箱 %s 的邮件 UID %s 为已读失败: %s %s",
+                "标记邮箱 %s 的 %s UID %s 为已读失败: %s %s",
                 self.account.user,
+                folder,
                 uid,
                 status,
                 data,
             )
+            return
+        log.debug(
+            "已标记已读: %s/%s UID %s",
+            self.account.user,
+            folder,
+            uid,
+        )
 
 
 def list_folders(
@@ -358,6 +428,7 @@ def list_folders(
     timeout: float = DEFAULT_IMAP_TIMEOUT,
 ) -> list[MailFolder]:
     """登录邮箱并列出 IMAP 文件夹。"""
+    log.debug("读取邮箱 %s 的文件夹列表", account.user)
     try:
         with imaplib.IMAP4_SSL(
             account.host,
@@ -375,6 +446,11 @@ def list_folders(
                 folder = _parse_list_line(line)
                 if folder is not None:
                     folders.append(folder)
+            log.debug(
+                "邮箱 %s 文件夹数量: %d",
+                account.user,
+                len(folders),
+            )
             return folders
     except MailError:
         raise

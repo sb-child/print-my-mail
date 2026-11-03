@@ -5,6 +5,9 @@
 target = "127.0.0.1:54321"
 # 轮询间隔（秒）
 poll_interval = 60
+# GitHub 初始轮询间隔（秒）；实际不会低于 poll_interval，
+# 也不会低于 GitHub 返回的 X-Poll-Interval
+github_poll_interval = 60
 # 等待打印任务完成的最长时间（秒）
 print_timeout = 120
 # 打印失败后的最大重试次数

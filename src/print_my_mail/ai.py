@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from dataclasses import replace
@@ -124,20 +125,39 @@ class OpenAIPostProcessor:
             meta=meta,
             body=body,
         )
+        started = time.monotonic()
+        log.debug(
+            "AI 摘要请求: kind=%s title=%s 输入=%d 字符",
+            kind,
+            title,
+            len(prompt),
+        )
         try:
             answer = self._complete(prompt)
         except Exception as exc:
+            elapsed = time.monotonic() - started
             # 摘要是附加功能，失败时截断原文，保证不打印整篇长文。
             log.warning(
-                "AI 摘要失败，回退到原文前 %d 个字符: %s",
+                "AI 摘要失败（%s，用时 %.2f 秒），"
+                "回退到原文前 %d 个字符: %s",
+                kind,
+                elapsed,
                 self.config.max_chars,
                 exc,
             )
             return (
                 _truncate(fallback, self.config.max_chars) if fallback.strip() else ""
             )
+        elapsed = time.monotonic() - started
         # 说不定 AI 吐了更多字，放宽这个限制。
-        return _limit_answer(answer, self.config.max_chars * 2)
+        limited = _limit_answer(answer, self.config.max_chars * 2)
+        log.debug(
+            "AI 摘要完成: kind=%s 用时=%.2f 秒 输出=%d 字符",
+            kind,
+            elapsed,
+            len(limited),
+        )
+        return limited
 
     def _complete(self, prompt: str) -> str:
         payload = {

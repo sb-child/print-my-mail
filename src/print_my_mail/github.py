@@ -24,6 +24,7 @@ from __future__ import annotations
 import email.utils
 import json
 import logging
+import math
 import random
 import re
 import time
@@ -105,10 +106,13 @@ class GitHubClient:
         *,
         api_url: str = API_URL,
         max_retries: int = MAX_RETRIES,
+        poll_interval: float = 60.0,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries 不能小于 0")
+        if not math.isfinite(poll_interval) or poll_interval <= 0:
+            raise ValueError("GitHub 轮询间隔必须是大于 0 的有限数字")
         self._pat = pat
         self._api_url = api_url.rstrip("/")
         host = urlparse(self._api_url).hostname
@@ -118,7 +122,8 @@ class GitHubClient:
         self._max_retries = max_retries
         self._sleep = sleep
         self._last_modified: str | None = None
-        self.poll_interval = 60.0
+        self._configured_poll_interval = poll_interval
+        self.poll_interval = poll_interval
 
     def notifications(self) -> list[dict[str, Any]]:
         """获取当前未读通知，自动处理分页。"""
@@ -230,9 +235,20 @@ class GitHubClient:
                     request, timeout=REQUEST_TIMEOUT
                 ) as response:
                     body = response.read()
+                    log.debug(
+                        "GitHub API %s %s -> %s",
+                        method,
+                        url,
+                        response.status,
+                    )
                     return _decode_body(body), response.headers
             except urllib.error.HTTPError as exc:
                 if exc.code == 304:
+                    log.debug(
+                        "GitHub API %s %s -> 304 Not Modified",
+                        method,
+                        url,
+                    )
                     return None, exc.headers
                 if attempt < self._max_retries and _is_retryable(exc):
                     delay = _retry_delay(exc.headers, attempt)
@@ -274,7 +290,14 @@ class GitHubClient:
     def _update_poll_interval(self, headers: Any) -> None:
         value = headers.get("X-Poll-Interval")
         if isinstance(value, str) and value.isdigit():
-            self.poll_interval = float(value)
+            interval = max(self._configured_poll_interval, float(value))
+            if interval != self.poll_interval:
+                log.debug(
+                    "GitHub 轮询间隔更新为 %.0f 秒（配置值 %.0f 秒）",
+                    interval,
+                    self._configured_poll_interval,
+                )
+            self.poll_interval = interval
 
 
 class GitHubPoller:
@@ -287,9 +310,15 @@ class GitHubPoller:
         client: GitHubAPI | None = None,
         dead_letter: DeadLetterStore | None = None,
         fetch_content: bool = True,
+        poll_interval: float = 60.0,
+        label: str = "GitHub",
     ) -> None:
         self.account = account
-        self._client = client or GitHubClient(account.pat)
+        self.label = label
+        self._client = client or GitHubClient(
+            account.pat,
+            poll_interval=poll_interval,
+        )
         self._dead_letter = dead_letter
         self.fetch_content = fetch_content
 
@@ -304,7 +333,12 @@ class GitHubPoller:
         调用方打印成功并确认后继续迭代，才会把这一批通知标记为已读；
         如果中途抛异常，这些通知会保持未读状态。
         """
+        log.debug("%s 拉取未读通知", self.label)
         threads = self._client.notifications()
+        if threads:
+            log.info("%s：发现 %d 条未读通知", self.label, len(threads))
+        else:
+            log.debug("%s：没有未读通知", self.label)
         items: list[GitHubItem] = []
         accepted_ids: list[str] = []
         invalid_ids: list[str] = []
@@ -318,11 +352,15 @@ class GitHubPoller:
                     details["subject_type"] = subject.get("type")
                     details["title"] = subject.get("title")
                     details["url"] = subject.get("url")
-                log.warning("无法处理 GitHub 通知 thread=%s", thread_id)
+                log.warning(
+                    "%s：无法处理通知 thread=%s",
+                    self.label,
+                    thread_id,
+                )
                 if self._dead_letter:
                     self._dead_letter.write(
                         kind="github",
-                        account="GitHub",
+                        account=self.label,
                         item=f"thread {thread_id}",
                         reason="通知缺少必要字段或无法解析",
                         details=details,
@@ -336,13 +374,34 @@ class GitHubPoller:
                 accepted_ids.append(thread_id)
 
         if items:
+            log.info(
+                "%s：准备打印 %d 条通知（无效 %d 条）",
+                self.label,
+                len(items),
+                len(invalid_ids),
+            )
             yield GitHubDigest(tuple(items))
 
+        marked = 0
         for thread_id in accepted_ids + invalid_ids:
             try:
                 self._client.mark_read(thread_id)
             except GitHubError as exc:
-                log.warning("标记 GitHub 通知 %s 已读失败: %s", thread_id, exc)
+                log.warning(
+                    "%s：标记通知 %s 已读失败: %s",
+                    self.label,
+                    thread_id,
+                    exc,
+                )
+            else:
+                marked += 1
+                log.debug(
+                    "%s：已标记通知 %s 为已读",
+                    self.label,
+                    thread_id,
+                )
+        if marked:
+            log.info("%s：已标记 %d 条通知为已读", self.label, marked)
 
     def _to_notification(self, thread: dict[str, Any]) -> GitHubNotification | None:
         item = self._to_item(thread)

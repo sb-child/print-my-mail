@@ -46,6 +46,27 @@ def test_subject_number() -> None:
     assert _subject_number("https://api.github.com/repos/a/b/commits/abc") is None
 
 
+def test_configured_poll_interval_is_a_floor() -> None:
+    client = GitHubClient("pat", poll_interval=120)
+    assert client.poll_interval == 120
+
+    client._update_poll_interval({"X-Poll-Interval": "60"})
+    assert client.poll_interval == 120
+
+    client._update_poll_interval({"X-Poll-Interval": "180"})
+    assert client.poll_interval == 180
+
+
+def test_poller_uses_configured_poll_interval() -> None:
+    poller = GitHubPoller(
+        GitHubAccount("pat"),
+        poll_interval=120,
+        label="GitHub #2",
+    )
+    assert poller.poll_interval == 120
+    assert poller.label == "GitHub #2"
+
+
 def test_notification_kind() -> None:
     assert _notification_kind("Issue", GitHubSubject(state="open")) == "issue"
     assert _notification_kind("Issue", GitHubSubject(state="closed")) == "closed-issue"

@@ -12,9 +12,13 @@
 
 from __future__ import annotations
 
+import logging
+
 from .client import PrintMyMailClient
 from .template import GitHubItem, GitHubNotification, make_github_tar, make_mail_tar
 from .timeutil import now
+
+log = logging.getLogger(__name__)
 
 
 def print_test_page(cli: PrintMyMailClient) -> None:
@@ -27,7 +31,10 @@ def print_test_page(cli: PrintMyMailClient) -> None:
         sender_name="发件人",
         content="正文内容",
     )
-    cli.print_typst(tar)
+    log.info("提交示例邮件")
+    job_id = cli.print_typst(tar)
+    log.info("示例邮件已提交: job=%s", job_id.hex())
+
     tar = make_github_tar(
         now(),
         [
@@ -50,4 +57,6 @@ def print_test_page(cli: PrintMyMailClient) -> None:
             ),
         ],
     )
-    cli.print_typst(tar)
+    log.info("提交示例 GitHub 通知")
+    job_id = cli.print_typst(tar)
+    log.info("示例 GitHub 通知已提交: job=%s", job_id.hex())

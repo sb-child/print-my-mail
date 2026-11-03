@@ -24,6 +24,7 @@ def test_load_config(tmp_path: Path) -> None:
 [server]
 target = "127.0.0.1:1234"
 poll_interval = 10
+github_poll_interval = 90
 print_timeout = 30
 print_max_retries = 2
 print_retry_base_delay = 1
@@ -57,6 +58,7 @@ question = "需要我处理吗？"
 
     assert config.target == "127.0.0.1:1234"
     assert config.poll_interval == 10
+    assert config.github_poll_interval == 90
     assert config.print_timeout == 30
     assert config.print_max_retries == 2
     assert config.print_retry_base_delay == 1
@@ -82,6 +84,7 @@ def test_defaults(tmp_path: Path) -> None:
     config = load_config(_write(tmp_path / "empty.toml", ""))
     assert config.target == "127.0.0.1:54321"
     assert config.poll_interval == 60
+    assert config.github_poll_interval == 60
     assert config.print_timeout == 120
     assert config.imap_timeout == 30
     assert config.mail_max_age == 60
@@ -97,6 +100,8 @@ def test_defaults(tmp_path: Path) -> None:
     [
         "[server]\npoll_interval = 0\n",
         "[server]\npoll_interval = nan\n",
+        "[server]\ngithub_poll_interval = 0\n",
+        "[server]\ngithub_poll_interval = nan\n",
         "[server]\nprint_timeout = -1\n",
         "[server]\nprint_max_retries = -1\n",
         "[server]\nprint_retry_base_delay = 0\n",

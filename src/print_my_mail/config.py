@@ -5,6 +5,7 @@
     [server]
     target = "127.0.0.1:54321"
     poll_interval = 60
+    github_poll_interval = 60
     print_timeout = 120
     print_max_retries = 3
     print_retry_base_delay = 5
@@ -50,6 +51,8 @@
 
 - `target`：gRPC 打印服务器地址；
 - `poll_interval`：轮询间隔；
+- `github_poll_interval`：GitHub 初始轮询间隔，实际间隔不会低于
+  `poll_interval`，也不会低于 GitHub 返回的 `X-Poll-Interval`；
 - `print_timeout`：提交打印和等待打印完成的最长时间；
 - `print_max_retries` / `print_retry_base_delay` / `print_retry_max_delay`：
   打印失败后的指数退避重试策略；
@@ -100,6 +103,7 @@ _SERVER_KEYS = frozenset(
     {
         "target",
         "poll_interval",
+        "github_poll_interval",
         "print_timeout",
         "print_max_retries",
         "print_retry_base_delay",
@@ -212,6 +216,7 @@ class Config:
 
     target: str = DEFAULT_TARGET
     poll_interval: float = 60.0
+    github_poll_interval: float = 60.0
     print_timeout: float = 120.0
     print_max_retries: int = 3
     print_retry_base_delay: float = 5.0
@@ -232,6 +237,10 @@ class Config:
         if self.print_max_retries < 0:
             raise ValueError("server.print_max_retries 不能小于 0")
         _require_positive_finite(self.poll_interval, "server.poll_interval")
+        _require_positive_finite(
+            self.github_poll_interval,
+            "server.github_poll_interval",
+        )
         _require_positive_finite(self.print_timeout, "server.print_timeout")
         _require_positive_finite(self.imap_timeout, "server.imap_timeout")
         _require_positive_finite(self.mail_max_age, "server.mail_max_age")
@@ -292,6 +301,11 @@ def load_config(path: str | Path | None = None) -> Config:
     return Config(
         target=_get_str(server, "target", DEFAULT_TARGET),
         poll_interval=_get_float(server, "poll_interval", 60.0),
+        github_poll_interval=_get_float(
+            server,
+            "github_poll_interval",
+            60.0,
+        ),
         print_timeout=_get_float(server, "print_timeout", 120.0),
         print_max_retries=_get_int(server, "print_max_retries", 3),
         print_retry_base_delay=_get_float(

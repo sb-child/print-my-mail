@@ -53,3 +53,14 @@ class DeadLetterStore:
                     file.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as exc:
             log.error("写入死信文件 %s 失败: %s", self.path, exc)
+            return
+
+        log.warning(
+            "写入死信 %s: kind=%s account=%s item=%s reason=%s details=%s",
+            self.path,
+            kind,
+            account,
+            item,
+            reason,
+            details or {},
+        )
