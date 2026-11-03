@@ -24,17 +24,21 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x64zsrv.proto\x12\x05\x64zsrv\"4\n\rPrintImageReq\x12\x12\n\nimage_file\x18\x01 \x01(\x0c\x12\x0f\n\x07repeats\x18\x02 \x01(\r\"3\n\rPrintTypstReq\x12\x11\n\ttypst_tar\x18\x01 \x01(\x0c\x12\x0f\n\x07repeats\x18\x02 \x01(\r\"\x1b\n\tJobHandle\x12\x0e\n\x06job_id\x18\x01 \x01(\x0c\"l\n\tJobStatus\x12\x0e\n\x06\x65xists\x18\x01 \x01(\x08\x12!\n\njob_status\x18\x02 \x01(\x0e\x32\r.dzsrv.Status\x12,\n\x0eprinter_status\x18\x03 \x01(\x0e\x32\x14.dzsrv.PrinterStatus\"\x1e\n\tJobCancel\x12\x11\n\tcancelled\x18\x01 \x01(\x08*\xae\x01\n\x06Status\x12\x13\n\x0fSTATUS_IN_QUEUE\x10\x00\x12\x14\n\x10STATUS_RENDERING\x10\x01\x12\x18\n\x14STATUS_RENDER_FAILED\x10\x02\x12\x18\n\x14STATUS_PRINT_PENDING\x10\x03\x12\x13\n\x0fSTATUS_PRINTING\x10\x04\x12\x1a\n\x16STATUS_PRINT_COMPLETED\x10\x05\x12\x14\n\x10STATUS_CANCELLED\x10\x06*\xd6\x04\n\rPrinterStatus\x12\x14\n\x10PS_NOT_COMPLETED\x10\x00\x12\x12\n\x0ePS_OTHER_ERROR\x10\x01\x12\x10\n\x0cPS_PRINTABLE\x10\x02\x12\x0f\n\x0bPS_PRINTING\x10\x03\x12\x0f\n\x0bPS_ROTATING\x10\x04\x12\r\n\tPS_NO_JOB\x10\x05\x12\x15\n\x11PS_PAGE_NOT_READY\x10\x06\x12\x13\n\x0fPS_JOB_CANCELED\x10\x07\x12\x14\n\x10PS_ENV_NOT_READY\x10\x08\x12\x12\n\x0ePS_VOL_TOO_LOW\x10\t\x12\x13\n\x0fPS_VOL_TOO_HIGH\x10\n\x12\x14\n\x10PS_TPH_NOT_FOUND\x10\x0b\x12\x12\n\x0ePS_TPH_TOO_HOT\x10\x0c\x12\x13\n\x0fPS_COVER_OPENED\x10\r\x12\x0f\n\x0bPS_NO_PAPER\x10\x0e\x12\x18\n\x14PS_RIBBON_CAN_OPENED\x10\x0f\x12\x10\n\x0cPS_NO_RIBBON\x10\x10\x12\x17\n\x13PS_UNMATCHED_RIBBON\x10\x11\x12\x13\n\x0fPS_TPH_TOO_COLD\x10\x12\x12\x14\n\x10PS_USEDUP_RIBBON\x10\x13\x12\x16\n\x12PS_USEDUP_RIBBON_2\x10\x14\x12\x0f\n\x0bPS_NO_LABEL\x10\x15\x12\x16\n\x12PS_UNMATCHED_LABEL\x10\x16\x12\x13\n\x0fPS_USEDUP_LABEL\x10\x17\x12\x12\n\x0ePS_NO_RIBBON_2\x10\x18\x12\x19\n\x15PS_UNMATCHED_RIBBON_2\x10\x19\x12\x17\n\x13PS_LABEL_CAN_OPENED\x10\x1a\x12\x0f\n\x0bPS_IO_ERROR\x10\x1b\x32s\n\x05Print\x12\x34\n\nPrintImage\x12\x14.dzsrv.PrintImageReq\x1a\x10.dzsrv.JobHandle\x12\x34\n\nPrintTypst\x12\x14.dzsrv.PrintTypstReq\x1a\x10.dzsrv.JobHandle2b\n\x04Mgmt\x12,\n\x06Status\x12\x10.dzsrv.JobHandle\x1a\x10.dzsrv.JobStatus\x12,\n\x06\x43\x61ncel\x12\x10.dzsrv.JobHandle\x1a\x10.dzsrv.JobCancelb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x64zsrv.proto\x12\x05\x64zsrv\"4\n\rPrintImageReq\x12\x12\n\nimage_file\x18\x01 \x01(\x0c\x12\x0f\n\x07repeats\x18\x02 \x01(\r\"3\n\rPrintTypstReq\x12\x11\n\ttypst_tar\x18\x01 \x01(\x0c\x12\x0f\n\x07repeats\x18\x02 \x01(\r\"\x1b\n\tJobHandle\x12\x0e\n\x06job_id\x18\x01 \x01(\x0c\"}\n\tJobStatus\x12\x1e\n\x05state\x18\x01 \x01(\x0e\x32\x0f.dzsrv.JobState\x12\"\n\x07\x66\x61ilure\x18\x02 \x01(\x0b\x32\x11.dzsrv.JobFailure\x12,\n\x0eprinter_status\x18\x03 \x01(\x0e\x32\x14.dzsrv.PrinterStatus\"g\n\nJobFailure\x12\"\n\x05stage\x18\x01 \x01(\x0e\x32\x13.dzsrv.FailureStage\x12$\n\x06reason\x18\x02 \x01(\x0e\x32\x14.dzsrv.FailureReason\x12\x0f\n\x07message\x18\x03 \x01(\t\"?\n\x0b\x43\x61ncelReply\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x1e\n\x05state\x18\x02 \x01(\x0e\x32\x0f.dzsrv.JobState*\xd7\x01\n\x08JobState\x12\x19\n\x15JOB_STATE_UNSPECIFIED\x10\x00\x12\x14\n\x10JOB_STATE_QUEUED\x10\x01\x12\x17\n\x13JOB_STATE_RENDERING\x10\x02\x12!\n\x1dJOB_STATE_WAITING_FOR_PRINTER\x10\x03\x12\x16\n\x12JOB_STATE_PRINTING\x10\x04\x12\x17\n\x13JOB_STATE_SUCCEEDED\x10\x05\x12\x14\n\x10JOB_STATE_FAILED\x10\x06\x12\x17\n\x13JOB_STATE_CANCELLED\x10\x07*\x9f\x01\n\x0c\x46\x61ilureStage\x12\x1d\n\x19\x46\x41ILURE_STAGE_UNSPECIFIED\x10\x00\x12\x18\n\x14\x46\x41ILURE_STAGE_RENDER\x10\x01\x12\x19\n\x15\x46\x41ILURE_STAGE_CONNECT\x10\x02\x12\"\n\x1e\x46\x41ILURE_STAGE_WAIT_FOR_PRINTER\x10\x03\x12\x17\n\x13\x46\x41ILURE_STAGE_PRINT\x10\x04*\xd8\x02\n\rFailureReason\x12\x1e\n\x1a\x46\x41ILURE_REASON_UNSPECIFIED\x10\x00\x12\x19\n\x15\x46\x41ILURE_REASON_RENDER\x10\x01\x12#\n\x1f\x46\x41ILURE_REASON_DEVICE_NOT_FOUND\x10\x02\x12#\n\x1f\x46\x41ILURE_REASON_DEVICE_NOT_READY\x10\x03\x12!\n\x1d\x46\x41ILURE_REASON_PRINTER_STATUS\x10\x04\x12!\n\x1d\x46\x41ILURE_REASON_PRINTER_SILENT\x10\x05\x12 \n\x1c\x46\x41ILURE_REASON_PRINT_TIMEOUT\x10\x06\x12&\n\"FAILURE_REASON_PRINT_DID_NOT_START\x10\x07\x12\x15\n\x11\x46\x41ILURE_REASON_IO\x10\x08\x12\x1b\n\x17\x46\x41ILURE_REASON_INTERNAL\x10\t*\xd5\x04\n\rPrinterStatus\x12\x1e\n\x1aPRINTER_STATUS_UNSPECIFIED\x10\x00\x12\x12\n\x0ePS_OTHER_ERROR\x10\x01\x12\x10\n\x0cPS_PRINTABLE\x10\x02\x12\x0f\n\x0bPS_PRINTING\x10\x03\x12\x0f\n\x0bPS_ROTATING\x10\x04\x12\r\n\tPS_NO_JOB\x10\x05\x12\x15\n\x11PS_PAGE_NOT_READY\x10\x06\x12\x13\n\x0fPS_JOB_CANCELED\x10\x07\x12\x14\n\x10PS_ENV_NOT_READY\x10\x08\x12\x12\n\x0ePS_VOL_TOO_LOW\x10\t\x12\x13\n\x0fPS_VOL_TOO_HIGH\x10\n\x12\x14\n\x10PS_TPH_NOT_FOUND\x10\x0b\x12\x12\n\x0ePS_TPH_TOO_HOT\x10\x0c\x12\x13\n\x0fPS_COVER_OPENED\x10\r\x12\x0f\n\x0bPS_NO_PAPER\x10\x0e\x12\x18\n\x14PS_RIBBON_CAN_OPENED\x10\x0f\x12\x10\n\x0cPS_NO_RIBBON\x10\x10\x12\x17\n\x13PS_UNMATCHED_RIBBON\x10\x11\x12\x13\n\x0fPS_TPH_TOO_COLD\x10\x12\x12\x14\n\x10PS_USEDUP_RIBBON\x10\x13\x12\x16\n\x12PS_USEDUP_RIBBON_2\x10\x14\x12\x0f\n\x0bPS_NO_LABEL\x10\x15\x12\x16\n\x12PS_UNMATCHED_LABEL\x10\x16\x12\x13\n\x0fPS_USEDUP_LABEL\x10\x17\x12\x12\n\x0ePS_NO_RIBBON_2\x10\x18\x12\x19\n\x15PS_UNMATCHED_RIBBON_2\x10\x19\x12\x17\n\x13PS_LABEL_CAN_OPENED\x10\x1a\"\x04\x08\x1b\x10\x1b\x32s\n\x05Print\x12\x34\n\nPrintImage\x12\x14.dzsrv.PrintImageReq\x1a\x10.dzsrv.JobHandle\x12\x34\n\nPrintTypst\x12\x14.dzsrv.PrintTypstReq\x1a\x10.dzsrv.JobHandle2d\n\x04Mgmt\x12,\n\x06Status\x12\x10.dzsrv.JobHandle\x1a\x10.dzsrv.JobStatus\x12.\n\x06\x43\x61ncel\x12\x10.dzsrv.JobHandle\x1a\x12.dzsrv.CancelReplyb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'dzsrv_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_STATUS']._serialized_start=301
-  _globals['_STATUS']._serialized_end=475
-  _globals['_PRINTERSTATUS']._serialized_start=478
-  _globals['_PRINTERSTATUS']._serialized_end=1076
+  _globals['_JOBSTATE']._serialized_start=456
+  _globals['_JOBSTATE']._serialized_end=671
+  _globals['_FAILURESTAGE']._serialized_start=674
+  _globals['_FAILURESTAGE']._serialized_end=833
+  _globals['_FAILUREREASON']._serialized_start=836
+  _globals['_FAILUREREASON']._serialized_end=1180
+  _globals['_PRINTERSTATUS']._serialized_start=1183
+  _globals['_PRINTERSTATUS']._serialized_end=1780
   _globals['_PRINTIMAGEREQ']._serialized_start=22
   _globals['_PRINTIMAGEREQ']._serialized_end=74
   _globals['_PRINTTYPSTREQ']._serialized_start=76
@@ -42,11 +46,13 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_JOBHANDLE']._serialized_start=129
   _globals['_JOBHANDLE']._serialized_end=156
   _globals['_JOBSTATUS']._serialized_start=158
-  _globals['_JOBSTATUS']._serialized_end=266
-  _globals['_JOBCANCEL']._serialized_start=268
-  _globals['_JOBCANCEL']._serialized_end=298
-  _globals['_PRINT']._serialized_start=1078
-  _globals['_PRINT']._serialized_end=1193
-  _globals['_MGMT']._serialized_start=1195
-  _globals['_MGMT']._serialized_end=1293
+  _globals['_JOBSTATUS']._serialized_end=283
+  _globals['_JOBFAILURE']._serialized_start=285
+  _globals['_JOBFAILURE']._serialized_end=388
+  _globals['_CANCELREPLY']._serialized_start=390
+  _globals['_CANCELREPLY']._serialized_end=453
+  _globals['_PRINT']._serialized_start=1782
+  _globals['_PRINT']._serialized_end=1897
+  _globals['_MGMT']._serialized_start=1899
+  _globals['_MGMT']._serialized_end=1999
 # @@protoc_insertion_point(module_scope)

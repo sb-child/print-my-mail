@@ -27,14 +27,17 @@ from print_my_mail.runner import Runner
 
 
 def _status(
-    job: Any = dzsrv_pb2.STATUS_PRINT_COMPLETED,
+    state: Any = dzsrv_pb2.JOB_STATE_SUCCEEDED,
     printer: Any = dzsrv_pb2.PS_PRINTABLE,
+    failure: dzsrv_pb2.JobFailure | None = None,
 ) -> dzsrv_pb2.JobStatus:
-    return dzsrv_pb2.JobStatus(
-        exists=True,
-        job_status=job,
+    status = dzsrv_pb2.JobStatus(
+        state=state,
         printer_status=printer,
     )
+    if failure is not None:
+        status.failure.CopyFrom(failure)
+    return status
 
 
 class FakeMailPoller:
@@ -151,8 +154,9 @@ def _runner(
 
 def test_print_succeeded() -> None:
     assert print_succeeded(_status())
-    assert not print_succeeded(_status(printer=dzsrv_pb2.PS_NO_PAPER))
-    assert not print_succeeded(_status(job=dzsrv_pb2.STATUS_RENDER_FAILED))
+    assert print_succeeded(_status(printer=dzsrv_pb2.PS_NO_JOB))
+    assert not print_succeeded(_status(state=dzsrv_pb2.JOB_STATE_FAILED))
+    assert not print_succeeded(_status(state=dzsrv_pb2.JOB_STATE_CANCELLED))
 
 
 def test_success_acks(tmp_path: Path) -> None:
@@ -170,12 +174,22 @@ def test_success_acks(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "status",
     [
-        _status(printer=dzsrv_pb2.PS_NO_PAPER),
-        _status(job=dzsrv_pb2.STATUS_RENDER_FAILED),
-        _status(job=dzsrv_pb2.STATUS_CANCELLED),
+        _status(
+            state=dzsrv_pb2.JOB_STATE_FAILED,
+            printer=dzsrv_pb2.PS_NO_PAPER,
+        ),
+        _status(
+            state=dzsrv_pb2.JOB_STATE_FAILED,
+            failure=dzsrv_pb2.JobFailure(
+                stage=dzsrv_pb2.FAILURE_STAGE_RENDER,
+                reason=dzsrv_pb2.FAILURE_REASON_RENDER,
+                message="typst error",
+            ),
+        ),
+        _status(state=dzsrv_pb2.JOB_STATE_CANCELLED),
     ],
 )
-def test_failed_print_is_dead_lettered_after_retries(
+def test_failed_print_is_dead_lettered(
     tmp_path: Path,
     status: dzsrv_pb2.JobStatus,
 ) -> None:
@@ -185,6 +199,65 @@ def test_failed_print_is_dead_lettered_after_retries(
     assert _github_fake(runner).marked
     dead = (tmp_path / "dead.jsonl").read_text(encoding="utf-8")
     assert '"kind": "print"' in dead
+
+
+def test_render_failure_is_not_retried(tmp_path: Path) -> None:
+    class RenderFailedPrinter(FakePrinter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def wait(
+            self,
+            job_id: bytes,
+            *,
+            timeout: float | None = None,
+        ) -> dzsrv_pb2.JobStatus:
+            self.calls += 1
+            return _status(
+                state=dzsrv_pb2.JOB_STATE_FAILED,
+                failure=dzsrv_pb2.JobFailure(
+                    stage=dzsrv_pb2.FAILURE_STAGE_RENDER,
+                    reason=dzsrv_pb2.FAILURE_REASON_RENDER,
+                    message="typst error",
+                ),
+            )
+
+    runner = _runner(tmp_path, max_retries=5)
+    runner._github_pollers = []
+    printer = RenderFailedPrinter()
+    runner.poll(printer)
+
+    assert printer.calls == 1
+    assert _mail_fake(runner).seen == ["主题"]
+    dead = (tmp_path / "dead.jsonl").read_text(encoding="utf-8")
+    assert "FAILURE_REASON_RENDER" in dead
+
+
+def test_cancelled_job_is_not_retried(tmp_path: Path) -> None:
+    class CancelledPrinter(FakePrinter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def wait(
+            self,
+            job_id: bytes,
+            *,
+            timeout: float | None = None,
+        ) -> dzsrv_pb2.JobStatus:
+            self.calls += 1
+            return _status(state=dzsrv_pb2.JOB_STATE_CANCELLED)
+
+    runner = _runner(tmp_path, max_retries=5)
+    runner._github_pollers = []
+    printer = CancelledPrinter()
+    runner.poll(printer)
+
+    assert printer.calls == 1
+    assert _mail_fake(runner).seen == ["主题"]
+    dead = (tmp_path / "dead.jsonl").read_text(encoding="utf-8")
+    assert "JOB_STATE_CANCELLED" in dead
 
 
 def test_retry_then_success(tmp_path: Path) -> None:
@@ -201,7 +274,10 @@ def test_retry_then_success(tmp_path: Path) -> None:
         ) -> dzsrv_pb2.JobStatus:
             self.calls += 1
             if self.calls == 1:
-                return _status(printer=dzsrv_pb2.PS_NO_PAPER)
+                return _status(
+                    state=dzsrv_pb2.JOB_STATE_FAILED,
+                    printer=dzsrv_pb2.PS_NO_PAPER,
+                )
             return _status()
 
     runner = _runner(tmp_path, max_retries=2)

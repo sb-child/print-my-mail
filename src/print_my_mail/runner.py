@@ -3,6 +3,7 @@
 - 每个邮箱 / GitHub 账户在独立 daemon 线程中轮询；
 - 打印提交和等待结果串行执行；
 - 打印失败时按指数退避重试，超过 `print_max_retries` 后写死信；
+- 渲染失败（`FAILURE_REASON_RENDER`）和任务取消不重试，直接写死信；
 - Ctrl-C 一次就退出，不再等待后台任务收尾；
 - 启动前的邮件只保留最近 `mail_max_age` 秒，避免打印历史积压。
 
@@ -25,6 +26,7 @@ import signal
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -42,6 +44,15 @@ from .template import make_github_tar, make_mail_tar
 from .timeutil import now
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PrintFailure:
+    """一次打印失败，以及是否值得重试。"""
+
+    message: str
+    retryable: bool = True
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class MailSource(Protocol):
@@ -333,23 +344,42 @@ class Runner:
                         break
 
                     attempts += 1
-                    if attempts > self.print_max_retries:
+                    details = {
+                        "folder": item.folder,
+                        "uid": item.uid,
+                        "subject": item.subject,
+                        "attempts": attempts,
+                        **error.details,
+                    }
+                    if not error.retryable:
                         log.error(
-                            "邮件《%s》重试耗尽（%d 次），写入死信",
+                            "邮件《%s》失败且不可重试，写入死信: %s",
                             item.subject,
-                            attempts,
+                            error.message,
                         )
                         self._dead_letter.write(
                             kind="print",
                             account=poller.account.user,
                             item=f"{item.folder} UID {item.uid}",
-                            reason=error,
-                            details={
-                                "folder": item.folder,
-                                "uid": item.uid,
-                                "subject": item.subject,
-                                "attempts": attempts,
-                            },
+                            reason=error.message,
+                            details=details,
+                        )
+                        poller.mark_seen(item)
+                        break
+
+                    if attempts > self.print_max_retries:
+                        log.error(
+                            "邮件《%s》重试耗尽（%d 次），写入死信: %s",
+                            item.subject,
+                            attempts,
+                            error.message,
+                        )
+                        self._dead_letter.write(
+                            kind="print",
+                            account=poller.account.user,
+                            item=f"{item.folder} UID {item.uid}",
+                            reason=error.message,
+                            details=details,
                         )
                         poller.mark_seen(item)
                         break
@@ -362,7 +392,7 @@ class Runner:
                         attempts,
                         self.print_max_retries,
                         delay,
-                        error,
+                        error.message,
                     )
                     if not self._wait(stop, delay):
                         return
@@ -399,11 +429,23 @@ class Runner:
                         break
 
                     attempts += 1
-                    if attempts > self.print_max_retries:
+                    details = {
+                        "attempts": attempts,
+                        "notifications": [
+                            {
+                                "repo": item.notification.repo,
+                                "id": item.notification.id,
+                                "title": item.notification.title,
+                            }
+                            for item in digest.items
+                        ],
+                        **error.details,
+                    }
+                    if not error.retryable:
                         log.error(
-                            "%s 打印重试耗尽（%d 次），写入死信",
+                            "%s 失败且不可重试，写入死信: %s",
                             poller.label,
-                            attempts,
+                            error.message,
                         )
                         self._dead_letter.write(
                             kind="print",
@@ -412,18 +454,27 @@ class Runner:
                                 f"{item.notification.repo}#{item.notification.id}"
                                 for item in digest.items
                             ),
-                            reason=error,
-                            details={
-                                "attempts": attempts,
-                                "notifications": [
-                                    {
-                                        "repo": item.notification.repo,
-                                        "id": item.notification.id,
-                                        "title": item.notification.title,
-                                    }
-                                    for item in digest.items
-                                ],
-                            },
+                            reason=error.message,
+                            details=details,
+                        )
+                        break
+
+                    if attempts > self.print_max_retries:
+                        log.error(
+                            "%s 打印重试耗尽（%d 次），写入死信: %s",
+                            poller.label,
+                            attempts,
+                            error.message,
+                        )
+                        self._dead_letter.write(
+                            kind="print",
+                            account=poller.label,
+                            item=", ".join(
+                                f"{item.notification.repo}#{item.notification.id}"
+                                for item in digest.items
+                            ),
+                            reason=error.message,
+                            details=details,
                         )
                         break
 
@@ -435,7 +486,7 @@ class Runner:
                         attempts,
                         self.print_max_retries,
                         delay,
-                        error,
+                        error.message,
                     )
                     if not self._wait(stop, delay):
                         return
@@ -456,7 +507,11 @@ class Runner:
             return True
         return not stop.wait(delay)
 
-    def _print_mail(self, printer: Printer, item: MailItem) -> str | None:
+    def _print_mail(
+        self,
+        printer: Printer,
+        item: MailItem,
+    ) -> PrintFailure | None:
         tar = make_mail_tar(
             recp=item.recipient,
             sender=item.sender,
@@ -468,7 +523,11 @@ class Runner:
         label = f"邮件《{item.subject}》"
         return self._submit(printer, tar, label)
 
-    def _print_github(self, printer: Printer, digest: GitHubDigest) -> str | None:
+    def _print_github(
+        self,
+        printer: Printer,
+        digest: GitHubDigest,
+    ) -> PrintFailure | None:
         tar = make_github_tar(
             now(),
             digest.items,
@@ -476,7 +535,12 @@ class Runner:
         label = f"{len(digest.items)} 条 GitHub 通知"
         return self._submit(printer, tar, label)
 
-    def _submit(self, printer: Printer, tar: bytes, label: str) -> str | None:
+    def _submit(
+        self,
+        printer: Printer,
+        tar: bytes,
+        label: str,
+    ) -> PrintFailure | None:
         with self._print_lock:
             started = time.monotonic()
             log.info("提交打印: %s", label)
@@ -491,7 +555,7 @@ class Runner:
                     label,
                     elapsed,
                 )
-                return message
+                return PrintFailure(message)
 
             log.debug("打印任务已提交: %s job=%s", label, job_id.hex())
             try:
@@ -506,31 +570,63 @@ class Runner:
                     job_id.hex(),
                     elapsed,
                 )
-                return message
+                return PrintFailure(
+                    message,
+                    details={"job_id": job_id.hex()},
+                )
 
             elapsed = time.monotonic() - started
-            if not print_succeeded(status):
-                message = (
-                    "打印未成功: "
-                    f"job_status={_status_name(status, 'job_status')} "
-                    f"printer_status={_status_name(status, 'printer_status')}"
-                )
-                log.warning(
-                    "%s（%s，job=%s，用时 %.2f 秒）",
-                    message,
+            if print_succeeded(status):
+                log.info(
+                    "打印完成: %s job=%s 用时=%.2f 秒",
                     label,
                     job_id.hex(),
                     elapsed,
                 )
-                return message
+                return None
 
-            log.info(
-                "打印完成: %s job=%s 用时=%.2f 秒",
+            details: dict[str, Any] = {
+                "job_id": job_id.hex(),
+                "elapsed_seconds": round(elapsed, 2),
+                "job_state": _status_name(status, "state"),
+                "printer_status": _status_name(status, "printer_status"),
+            }
+            retryable = status.state != dzsrv_pb2.JOB_STATE_CANCELLED
+            message = (
+                "打印未成功: "
+                f"state={_status_name(status, 'state')} "
+                f"printer_status={_status_name(status, 'printer_status')}"
+            )
+            if status.HasField("failure"):
+                failure = status.failure
+                details["failure_stage"] = _status_name(failure, "stage")
+                details["failure_reason"] = _status_name(failure, "reason")
+                if failure.message:
+                    details["failure_message"] = failure.message
+                if failure.reason == dzsrv_pb2.FAILURE_REASON_RENDER:
+                    retryable = False
+                message += (
+                    f" failure_stage={_status_name(failure, 'stage')}"
+                    f" failure_reason={_status_name(failure, 'reason')}"
+                )
+                if failure.message:
+                    message += f" failure_message={failure.message}"
+            if status.state == dzsrv_pb2.JOB_STATE_CANCELLED:
+                message += "（任务被取消）"
+
+            log.warning(
+                "%s（%s，job=%s，用时 %.2f 秒，可重试=%s）",
+                message,
                 label,
                 job_id.hex(),
                 elapsed,
+                "是" if retryable else "否",
             )
-            return None
+            return PrintFailure(
+                message,
+                retryable=retryable,
+                details=details,
+            )
 
 
 def _status_name(status: Any, field_name: str) -> str:

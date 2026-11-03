@@ -50,13 +50,23 @@ class PrintServicer:
     """Missing associated documentation comment in .proto file."""
 
     def PrintImage(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """打印一张 jpg / png。
+
+        - 图片按打印头宽度等比缩放（只缩不放）后抖动成 1bpp；
+        - 请求体上限由服务端 `--max-job-bytes` 决定（默认 64 MiB），超过返回 `RESOURCE_EXHAUSTED`；
+        - 队列满也返回 `RESOURCE_EXHAUSTED`；
+        - 服务端正在关闭返回 `UNAVAILABLE`。
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def PrintTypst(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """打印一份 Typst 文档。
+
+        tar 里必须有 `main.typ`；文档按页渲染，每页单独发给打印机。
+        错误码和 `PrintImage` 一样。
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -157,7 +167,7 @@ class MgmtStub:
         self.Cancel = channel.unary_unary(
                 '/dzsrv.Mgmt/Cancel',
                 request_serializer=dzsrv__pb2.JobHandle.SerializeToString,
-                response_deserializer=dzsrv__pb2.JobCancel.FromString,
+                response_deserializer=dzsrv__pb2.CancelReply.FromString,
                 _registered_method=True)
 
 
@@ -165,13 +175,26 @@ class MgmtServicer:
     """Missing associated documentation comment in .proto file."""
 
     def Status(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """查询任务状态。
+
+        - `job_id` 非法（不是 16 字节）或任务已经从服务端回收：`NOT_FOUND`；
+        - 服务端正在关闭：`UNAVAILABLE`。
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Cancel(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """请求取消任务。
+
+        取消是**异步**的：`accepted = true` 只代表服务端接受了请求，任务会走到
+        `JOB_STATE_CANCELLED`，中间可能还要处理掉正在进行的渲染或当前这一页。
+        打印过程中取消不会立刻停住电机（协议没有“中止当前页”的命令），
+        已经写进去的这一页会打完。
+
+        - 任务已经是终态、或者之前已经取消过：`accepted = false`，`state` 是任务当时的状态；
+        - `job_id` 非法或任务不存在：`NOT_FOUND`。
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -187,7 +210,7 @@ def add_MgmtServicer_to_server(servicer, server):
             'Cancel': grpc.unary_unary_rpc_method_handler(
                     servicer.Cancel,
                     request_deserializer=dzsrv__pb2.JobHandle.FromString,
-                    response_serializer=dzsrv__pb2.JobCancel.SerializeToString,
+                    response_serializer=dzsrv__pb2.CancelReply.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -243,7 +266,7 @@ class Mgmt:
             target,
             '/dzsrv.Mgmt/Cancel',
             dzsrv__pb2.JobHandle.SerializeToString,
-            dzsrv__pb2.JobCancel.FromString,
+            dzsrv__pb2.CancelReply.FromString,
             options,
             channel_credentials,
             insecure,

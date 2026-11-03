@@ -1,5 +1,8 @@
 """dzsrv 的 gRPC 客户端封装。
 
+对应 dz-print 新版 proto：`JobStatus.state` 表示任务状态，失败详情在
+`JobStatus.failure`，成功只看 `JOB_STATE_SUCCEEDED`。
+
 用法::
 
     from print_my_mail import PrintMyMailClient
@@ -17,7 +20,7 @@
     with PrintMyMailClient("127.0.0.1:54321") as client:
         job_id = client.print_typst(tar, timeout=30)
         status = client.wait(job_id, timeout=120)
-        print(status.job_status, status.printer_status)
+        print(status.state, status.printer_status)
 
 默认连接明文 gRPC；也可以传入已有的 `grpc.Channel`（例如带 TLS 或
 拦截器的 channel）::
@@ -46,26 +49,24 @@ from .proto import dzsrv_pb2, dzsrv_pb2_grpc
 
 DEFAULT_TARGET = "127.0.0.1:54321"
 
-# 这三个状态不会再有后续变化。
-TERMINAL_STATUSES = frozenset(
+# 这三个任务状态不会再有后续变化。
+TERMINAL_STATES = frozenset(
     {
-        dzsrv_pb2.STATUS_RENDER_FAILED,
-        dzsrv_pb2.STATUS_PRINT_COMPLETED,
-        dzsrv_pb2.STATUS_CANCELLED,
+        dzsrv_pb2.JOB_STATE_SUCCEEDED,
+        dzsrv_pb2.JOB_STATE_FAILED,
+        dzsrv_pb2.JOB_STATE_CANCELLED,
     }
 )
 
 
 def print_succeeded(status: dzsrv_pb2.JobStatus) -> bool:
-    """判断一个终态任务是否真的打印成功。
+    """判断一个终态任务是否打印成功。
 
-    dz-server 在成功时把 printer_status 设为 PS_PRINTABLE；
-    STATUS_PRINT_COMPLETED 也可能表示打印失败，必须结合 printer_status 判断。
+    新协议里成功只由 `state == JOB_STATE_SUCCEEDED` 决定；
+    `printer_status` 仅供展示和排障，不参与成败判定
+    （成功时它也可能是 `PS_NO_JOB`）。
     """
-    return (
-        status.job_status == dzsrv_pb2.STATUS_PRINT_COMPLETED
-        and status.printer_status == dzsrv_pb2.PS_PRINTABLE
-    )
+    return status.state == dzsrv_pb2.JOB_STATE_SUCCEEDED
 
 
 class PrintMyMailClient:
@@ -147,12 +148,15 @@ class PrintMyMailClient:
         *,
         timeout: float | None = None,
     ) -> bool:
-        """取消任务，返回是否取消成功。"""
+        """请求取消任务，返回服务端是否接受。
+
+        取消是异步的；接受后任务会进入 `JOB_STATE_CANCELLED`。
+        """
         response = self._mgmt.Cancel(
             dzsrv_pb2.JobHandle(job_id=job_id),
             timeout=timeout,
         )
-        return response.cancelled
+        return response.accepted
 
     def wait(
         self,
@@ -165,7 +169,8 @@ class PrintMyMailClient:
         """轮询直到任务进入终态，并返回最终状态。
 
         `timeout` 是整体等待时间；`rpc_timeout` 是单次 Status 调用的超时。
-        超时将抛出 `TimeoutError`，任务不存在将抛出 `LookupError`。
+        超时将抛出 `TimeoutError`；任务不存在或已被回收（`NOT_FOUND`）
+        将抛出 `LookupError`。
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -177,10 +182,15 @@ class PrintMyMailClient:
                     remaining if rpc_timeout is None else min(rpc_timeout, remaining)
                 )
 
-            status = self.status(job_id, timeout=call_timeout)
-            if not status.exists:
-                raise LookupError(f"任务不存在: {job_id.hex()}")
-            if status.job_status in TERMINAL_STATUSES:
+            try:
+                status = self.status(job_id, timeout=call_timeout)
+            except grpc.RpcError as exc:
+                if exc.code() == grpc.StatusCode.NOT_FOUND:
+                    raise LookupError(
+                        f"任务不存在: {job_id.hex()}"
+                    ) from exc
+                raise
+            if status.state in TERMINAL_STATES:
                 return status
 
             if deadline is not None and time.monotonic() >= deadline:
