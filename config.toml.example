@@ -57,3 +57,6 @@ max_chars = 100
 max_input_chars = 4000
 # 拼接进提示词的问题
 question = "用不超过 100 字总结内容，并说明是否需要我处理。"
+# 发送 response_format = { type = "json_object" }，要求模型返回 {"summary": "..."}
+# DeepSeek / OpenAI 支持；不支持 response_format 的本地服务可以设为 false
+json_mode = true

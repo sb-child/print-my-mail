@@ -34,6 +34,7 @@
     max_chars = 100
     max_input_chars = 4000
     question = "用不超过 100 字总结内容，并说明是否需要我处理。"
+    json_mode = true
 
 读取配置::
 
@@ -74,7 +75,10 @@
 - `timeout`：单次请求超时；
 - `max_chars`：回答的最大字符数，默认 100；
 - `max_input_chars`：发送给模型的正文最大字符数；
-- `question`：拼接进提示词的问题，默认要求 100 字内总结。
+- `question`：拼接进提示词的问题，默认要求 100 字内总结；
+- `json_mode`：是否发送 `response_format = {"type": "json_object"}`，
+  默认开启；DeepSeek / OpenAI 支持，不支持 `response_format` 的本地服务
+  可以关闭。
 
 `folders` 默认是 `["INBOX"]`。Gmail 的垃圾邮件文件夹名是 modified UTF-7
 编码（例如 `[Gmail]/&V4NXPpCuTvY-`），必须使用 `print-my-mail folders`
@@ -126,6 +130,7 @@ _AI_KEYS = frozenset(
         "max_chars",
         "max_input_chars",
         "question",
+        "json_mode",
     }
 )
 
@@ -193,6 +198,7 @@ class AIConfig:
     max_chars: int = 100
     max_input_chars: int = 4000
     question: str = DEFAULT_AI_QUESTION
+    json_mode: bool = True
 
     def __post_init__(self) -> None:
         if not self.enabled:
@@ -457,6 +463,7 @@ def _ai_config(data: dict[str, Any]) -> AIConfig:
         max_chars=_get_int(data, "max_chars", 100),
         max_input_chars=_get_int(data, "max_input_chars", 4000),
         question=_get_str(data, "question", DEFAULT_AI_QUESTION),
+        json_mode=_get_bool(data, "json_mode", True),
     )
 
 

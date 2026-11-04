@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from print_my_mail import (
     AIConfig,
     Config,
@@ -15,10 +17,12 @@ from print_my_mail import (
     MailItem,
 )
 from print_my_mail.ai import (
+    OpenAIError,
     OpenAIPostProcessor,
     _build_prompt,
     _chat_endpoint,
     _extract_content,
+    _extract_summary,
     _limit_answer,
     _truncate,
 )
@@ -72,6 +76,10 @@ def _reply(text: str) -> bytes:
     ).encode("utf-8")
 
 
+def _summary_reply(summary: str) -> bytes:
+    return _reply(json.dumps({"summary": summary}, ensure_ascii=False))
+
+
 def test_chat_endpoint_normalization() -> None:
     assert (
         _chat_endpoint("https://api.example.com/v1")
@@ -83,20 +91,40 @@ def test_chat_endpoint_normalization() -> None:
     )
 
 
-def test_build_prompt_contains_question_and_clips_body() -> None:
+def test_build_prompt_is_json_and_clips_body() -> None:
     prompt = _build_prompt(
         _config(max_chars=80, max_input_chars=10),
         kind="邮件",
         title="标题",
-        meta="发件人：a@example.com",
+        meta={"from": "a@example.com"},
         body="0123456789ABCDEF",
     )
-    assert "以下是邮件的内容。" in prompt
-    assert "需要我处理吗？" in prompt
-    assert "不超过 80 个字符" in prompt
-    assert "0123456789" in prompt
-    assert "ABCDEF" not in prompt
-    assert "内容已截断" in prompt
+    payload = json.loads(prompt)
+
+    assert payload["kind"] == "邮件"
+    assert payload["title"] == "标题"
+    assert payload["meta"] == {"from": "a@example.com"}
+    assert payload["question"] == "需要我处理吗？"
+    assert payload["requirements"]["max_summary_chars"] == 80
+    assert payload["content"].startswith("0123456789")
+    assert "ABCDEF" not in payload["content"]
+    assert "内容已截断" in payload["content"]
+
+
+def test_build_prompt_keeps_github_content_fields() -> None:
+    prompt = _build_prompt(
+        _config(),
+        kind="GitHub 通知",
+        title="owner/repo#1 标题",
+        meta={"type": "issue"},
+        body={"body": "正文", "latest_comment": "评论"},
+    )
+    payload = json.loads(prompt)
+
+    assert payload["content"] == {
+        "body": "正文",
+        "latest_comment": "评论",
+    }
 
 
 def test_limit_answer_is_single_paragraph_and_bounded() -> None:
@@ -126,13 +154,33 @@ def test_extract_content_supports_text_parts() -> None:
     )
 
 
+def test_extract_summary_parses_json_object() -> None:
+    data = {
+        "choices": [
+            {"message": {"content": '{"summary": " 摘要内容 "}'}},
+        ]
+    }
+    assert _extract_summary(data) == "摘要内容"
+
+
+def test_extract_summary_rejects_non_json_and_missing_field() -> None:
+    with pytest.raises(OpenAIError):
+        _extract_summary({"choices": [{"message": {"content": "纯文本"}}]})
+    with pytest.raises(OpenAIError):
+        _extract_summary({"choices": [{"message": {"content": "{}"}}]})
+    with pytest.raises(OpenAIError):
+        _extract_summary(
+            {"choices": [{"message": {"content": '{"text": "x"}'}}]}
+        )
+
+
 def test_mail_replaces_body_with_summary(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
 
     def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
         captured["request"] = request
         captured["timeout"] = kwargs.get("timeout")
-        return FakeResponse(_reply(" 摘要内容 "))
+        return FakeResponse(_summary_reply(" 摘要内容 "))
 
     monkeypatch.setattr(
         "print_my_mail.ai.urllib.request.urlopen",
@@ -150,12 +198,46 @@ def test_mail_replaces_body_with_summary(monkeypatch: Any) -> None:
     assert captured["timeout"] == 12
     payload = json.loads(request.data)
     assert payload["model"] == "gpt-test"
-    assert "原始正文" in payload["messages"][1]["content"]
-    assert "需要我处理吗？" in payload["messages"][1]["content"]
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["max_tokens"] >= 256
+    prompt = json.loads(payload["messages"][1]["content"])
+    assert prompt["content"] == "原始正文"
+    assert prompt["question"] == "需要我处理吗？"
+    assert prompt["meta"]["from"] == "发件人 <sender@example.com>"
+
+
+def test_json_mode_can_be_disabled(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
+        captured["request"] = request
+        return FakeResponse(_summary_reply("摘要"))
+
+    monkeypatch.setattr(
+        "print_my_mail.ai.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    result = OpenAIPostProcessor(_config(json_mode=False)).mail(_mail())
+
+    assert result.body == "摘要"
+    payload = json.loads(captured["request"].data)
+    assert "response_format" not in payload
+
+
+def test_invalid_json_falls_back(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        "print_my_mail.ai.urllib.request.urlopen",
+        lambda request, **kwargs: FakeResponse(_reply("不是 JSON")),
+    )
+
+    result = OpenAIPostProcessor(_config()).mail(_mail("原始正文"))
+
+    assert result.body == "原始正文"
 
 
 def test_github_sets_content_per_item(monkeypatch: Any) -> None:
-    replies = [_reply("摘要 A"), _reply("摘要 B")]
+    replies = [_summary_reply("摘要 A"), _summary_reply("摘要 B")]
 
     def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
         return FakeResponse(replies.pop(0))

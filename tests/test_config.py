@@ -51,6 +51,7 @@ timeout = 12
 max_chars = 80
 max_input_chars = 2000
 question = "需要我处理吗？"
+json_mode = false
 """,
     )
 
@@ -78,6 +79,7 @@ question = "需要我处理吗？"
     assert config.ai.max_chars == 80
     assert config.ai.max_input_chars == 2000
     assert config.ai.question == "需要我处理吗？"
+    assert config.ai.json_mode is False
 
 
 def test_defaults(tmp_path: Path) -> None:
@@ -93,6 +95,7 @@ def test_defaults(tmp_path: Path) -> None:
     assert config.ai.enabled is False
     assert config.ai.max_chars == 100
     assert config.ai.max_input_chars == 4000
+    assert config.ai.json_mode is True
 
 
 @pytest.mark.parametrize(
