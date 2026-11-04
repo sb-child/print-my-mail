@@ -34,7 +34,8 @@
     max_chars = 100
     max_input_chars = 4000
     question = "用不超过 100 字总结内容，并说明是否需要我处理。"
-    json_mode = true
+    output_mode = "tool"
+    max_retries = 2
 
 读取配置::
 
@@ -76,9 +77,12 @@
 - `max_chars`：回答的最大字符数，默认 100；
 - `max_input_chars`：发送给模型的正文最大字符数；
 - `question`：拼接进提示词的问题，默认要求 100 字内总结；
-- `json_mode`：是否发送 `response_format = {"type": "json_object"}`，
-  默认开启；DeepSeek / OpenAI 支持，不支持 `response_format` 的本地服务
-  可以关闭。
+- `output_mode`：结构化输出的方式，默认 `"tool"`：
+  - `"tool"`：要求模型调用 `submit_summary` 工具，DeepSeek / OpenAI 支持；
+  - `"json"`：发送 `response_format = {"type": "json_object"}`；
+  - `"prompt"`：只靠提示词要求 JSON，适合不支持 tools 和
+    `response_format` 的本地服务；
+- `max_retries`：返回无效内容时的重试次数，默认 2。
 
 `folders` 默认是 `["INBOX"]`。Gmail 的垃圾邮件文件夹名是 modified UTF-7
 编码（例如 `[Gmail]/&V4NXPpCuTvY-`），必须使用 `print-my-mail folders`
@@ -101,6 +105,7 @@ log = logging.getLogger(__name__)
 CONFIG_NAME = "config.toml"
 
 DEFAULT_AI_QUESTION = "用不超过 100 字总结内容，并说明是否需要我处理。"
+_AI_OUTPUT_MODES = frozenset({"tool", "json", "prompt"})
 
 _TOP_LEVEL_KEYS = frozenset({"server", "mail", "github", "ai"})
 _SERVER_KEYS = frozenset(
@@ -130,7 +135,8 @@ _AI_KEYS = frozenset(
         "max_chars",
         "max_input_chars",
         "question",
-        "json_mode",
+        "output_mode",
+        "max_retries",
     }
 )
 
@@ -198,7 +204,8 @@ class AIConfig:
     max_chars: int = 100
     max_input_chars: int = 4000
     question: str = DEFAULT_AI_QUESTION
-    json_mode: bool = True
+    output_mode: str = "tool"
+    max_retries: int = 2
 
     def __post_init__(self) -> None:
         if not self.enabled:
@@ -209,10 +216,16 @@ class AIConfig:
             raise ValueError("ai.enabled = true 时 ai.model 不能为空")
         if not self.question.strip():
             raise ValueError("ai.question 不能为空")
+        if self.output_mode not in _AI_OUTPUT_MODES:
+            raise ValueError(
+                "ai.output_mode 必须是 tool、json 或 prompt 之一"
+            )
         if self.max_chars <= 0:
             raise ValueError("ai.max_chars 必须大于 0")
         if self.max_input_chars <= 0:
             raise ValueError("ai.max_input_chars 必须大于 0")
+        if self.max_retries < 0:
+            raise ValueError("ai.max_retries 不能小于 0")
         _require_positive_finite(self.timeout, "ai.timeout")
 
 
@@ -463,7 +476,8 @@ def _ai_config(data: dict[str, Any]) -> AIConfig:
         max_chars=_get_int(data, "max_chars", 100),
         max_input_chars=_get_int(data, "max_input_chars", 4000),
         question=_get_str(data, "question", DEFAULT_AI_QUESTION),
-        json_mode=_get_bool(data, "json_mode", True),
+        output_mode=_get_str(data, "output_mode", "tool"),
+        max_retries=_get_int(data, "max_retries", 2),
     )
 
 

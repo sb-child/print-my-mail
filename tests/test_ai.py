@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-import urllib.error
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from openai import OpenAIError as SDKOpenAIError
 
 from print_my_mail import (
     AIConfig,
@@ -17,12 +18,13 @@ from print_my_mail import (
     MailItem,
 )
 from print_my_mail.ai import (
+    SUMMARY_TOOL_NAME,
     OpenAIError,
     OpenAIPostProcessor,
+    _base_url,
     _build_prompt,
-    _chat_endpoint,
-    _extract_content,
     _extract_summary,
+    _extract_tool_summary,
     _limit_answer,
     _truncate,
 )
@@ -55,39 +57,79 @@ def _mail(body: str = "原始正文") -> MailItem:
     )
 
 
-class FakeResponse:
-    def __init__(self, body: bytes) -> None:
-        self.body = body
-
-    def __enter__(self) -> FakeResponse:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        pass
-
-    def read(self, size: int = -1) -> bytes:
-        return self.body
+def _content(summary: str) -> str:
+    return json.dumps({"summary": summary}, ensure_ascii=False)
 
 
-def _reply(text: str) -> bytes:
-    return json.dumps(
-        {"choices": [{"message": {"content": text}}]},
-        ensure_ascii=False,
-    ).encode("utf-8")
+def _tool_calls(arguments: str) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(
+            function=SimpleNamespace(
+                name=SUMMARY_TOOL_NAME,
+                arguments=arguments,
+            )
+        )
+    ]
 
 
-def _summary_reply(summary: str) -> bytes:
-    return _reply(json.dumps({"summary": summary}, ensure_ascii=False))
+def _tool_reply(summary: str) -> list[SimpleNamespace]:
+    return _tool_calls(_content(summary))
 
 
-def test_chat_endpoint_normalization() -> None:
-    assert (
-        _chat_endpoint("https://api.example.com/v1")
-        == "https://api.example.com/v1/chat/completions"
+class FakeCompletions:
+    def __init__(
+        self,
+        replies: list[str | None | list[SimpleNamespace] | Exception],
+    ) -> None:
+        self._replies = iter(replies)
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        reply = next(self._replies)
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, list):
+            message = SimpleNamespace(content="", tool_calls=reply)
+        else:
+            message = SimpleNamespace(content=reply, tool_calls=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+        )
+
+
+class FakeClient:
+    def __init__(self, completions: FakeCompletions) -> None:
+        self.chat = SimpleNamespace(completions=completions)
+
+
+def _setup(
+    monkeypatch: Any,
+    replies: list[str | None | list[SimpleNamespace] | Exception],
+    **overrides: Any,
+) -> tuple[OpenAIPostProcessor, FakeCompletions, dict[str, Any]]:
+    completions = FakeCompletions(replies)
+    created: dict[str, Any] = {}
+
+    def fake_openai(**kwargs: Any) -> FakeClient:
+        created.update(kwargs)
+        return FakeClient(completions)
+
+    monkeypatch.setattr("print_my_mail.ai.OpenAI", fake_openai)
+    # 重试时不要真的等待。
+    monkeypatch.setattr("print_my_mail.ai.RETRY_BASE_DELAY", 0.0)
+    return OpenAIPostProcessor(_config(**overrides)), completions, created
+
+
+def test_base_url_normalization() -> None:
+    assert _base_url("https://api.example.com/v1") == (
+        "https://api.example.com/v1"
     )
-    assert (
-        _chat_endpoint("https://api.example.com/v1/chat/completions/")
-        == "https://api.example.com/v1/chat/completions"
+    assert _base_url("https://api.example.com/v1/chat/completions/") == (
+        "https://api.example.com/v1"
+    )
+    assert _base_url("https://api.deepseek.com") == (
+        "https://api.deepseek.com"
     )
 
 
@@ -134,117 +176,142 @@ def test_limit_answer_is_single_paragraph_and_bounded() -> None:
     assert _truncate("  甲乙\n丙丁  ", 3) == "甲乙\n"
 
 
-def test_extract_content_supports_text_parts() -> None:
-    assert (
-        _extract_content(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": [
-                                {"type": "text", "text": "a"},
-                                {"text": "b"},
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        == "ab"
-    )
-
-
 def test_extract_summary_parses_json_object() -> None:
-    data = {
-        "choices": [
-            {"message": {"content": '{"summary": " 摘要内容 "}'}},
-        ]
-    }
-    assert _extract_summary(data) == "摘要内容"
+    assert _extract_summary('{"summary": " 摘要内容 "}') == "摘要内容"
 
 
-def test_extract_summary_rejects_non_json_and_missing_field() -> None:
-    with pytest.raises(OpenAIError):
-        _extract_summary({"choices": [{"message": {"content": "纯文本"}}]})
-    with pytest.raises(OpenAIError):
-        _extract_summary({"choices": [{"message": {"content": "{}"}}]})
-    with pytest.raises(OpenAIError):
-        _extract_summary(
-            {"choices": [{"message": {"content": '{"text": "x"}'}}]}
-        )
+def test_extract_summary_rejects_empty_and_invalid() -> None:
+    for content in (None, "", "   ", "纯文本", "{}", '{"text": "x"}'):
+        with pytest.raises(OpenAIError):
+            _extract_summary(content)
 
 
-def test_mail_replaces_body_with_summary(monkeypatch: Any) -> None:
-    captured: dict[str, Any] = {}
+def test_extract_tool_summary() -> None:
+    message = SimpleNamespace(tool_calls=_tool_reply("工具摘要"))
+    assert _extract_tool_summary(message) == "工具摘要"
 
-    def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
-        captured["request"] = request
-        captured["timeout"] = kwargs.get("timeout")
-        return FakeResponse(_summary_reply(" 摘要内容 "))
+    for tool_calls in (
+        None,
+        [],
+        _tool_calls("不是 JSON"),
+        _tool_calls("{}"),
+        _tool_calls(_content("")),
+    ):
+        with pytest.raises(OpenAIError):
+            _extract_tool_summary(
+                SimpleNamespace(tool_calls=tool_calls)
+            )
 
-    monkeypatch.setattr(
-        "print_my_mail.ai.urllib.request.urlopen",
-        fake_urlopen,
+
+def test_mail_uses_tool_by_default(monkeypatch: Any) -> None:
+    processor, completions, created = _setup(
+        monkeypatch,
+        [_tool_reply(" 摘要内容 ")],
     )
 
-    config = _config()
-    result = OpenAIPostProcessor(config).mail(_mail())
+    result = processor.mail(_mail())
 
     assert result.body == "摘要内容"
     assert result.html_body == ""
-    request = captured["request"]
-    assert request.full_url == "https://api.example.com/v1/chat/completions"
-    assert request.headers["Authorization"] == "Bearer sk-test"
-    assert captured["timeout"] == 12
-    payload = json.loads(request.data)
+    assert created["base_url"] == "https://api.example.com/v1"
+    assert created["api_key"] == "sk-test"
+    assert created["timeout"] == 12
+    assert created["max_retries"] == 2
+
+    payload = completions.calls[0]
     assert payload["model"] == "gpt-test"
-    assert payload["response_format"] == {"type": "json_object"}
-    assert payload["max_tokens"] >= 256
+    assert payload["tool_choice"] == "auto"
+    assert payload["tools"][0]["function"]["name"] == SUMMARY_TOOL_NAME
+    assert "response_format" not in payload
+    assert "submit_summary" in payload["messages"][0]["content"]
     prompt = json.loads(payload["messages"][1]["content"])
     assert prompt["content"] == "原始正文"
     assert prompt["question"] == "需要我处理吗？"
     assert prompt["meta"]["from"] == "发件人 <sender@example.com>"
 
 
-def test_json_mode_can_be_disabled(monkeypatch: Any) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
-        captured["request"] = request
-        return FakeResponse(_summary_reply("摘要"))
-
-    monkeypatch.setattr(
-        "print_my_mail.ai.urllib.request.urlopen",
-        fake_urlopen,
+def test_json_output_mode(monkeypatch: Any) -> None:
+    processor, completions, _ = _setup(
+        monkeypatch,
+        [_content("摘要")],
+        output_mode="json",
     )
 
-    result = OpenAIPostProcessor(_config(json_mode=False)).mail(_mail())
+    result = processor.mail(_mail())
 
     assert result.body == "摘要"
-    payload = json.loads(captured["request"].data)
-    assert "response_format" not in payload
+    payload = completions.calls[0]
+    assert payload["response_format"] == {"type": "json_object"}
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
 
 
-def test_invalid_json_falls_back(monkeypatch: Any) -> None:
-    monkeypatch.setattr(
-        "print_my_mail.ai.urllib.request.urlopen",
-        lambda request, **kwargs: FakeResponse(_reply("不是 JSON")),
+def test_prompt_output_mode(monkeypatch: Any) -> None:
+    processor, completions, _ = _setup(
+        monkeypatch,
+        [_content("摘要")],
+        output_mode="prompt",
     )
 
-    result = OpenAIPostProcessor(_config()).mail(_mail("原始正文"))
+    assert processor.mail(_mail()).body == "摘要"
+    payload = completions.calls[0]
+    assert "response_format" not in payload
+    assert "tools" not in payload
+
+
+def test_missing_tool_call_is_retried(monkeypatch: Any) -> None:
+    processor, completions, _ = _setup(
+        monkeypatch,
+        [[], _tool_reply("重试成功")],
+        max_retries=1,
+    )
+
+    result = processor.mail(_mail())
+
+    assert result.body == "重试成功"
+    assert len(completions.calls) == 2
+
+
+def test_invalid_tool_arguments_are_retried(monkeypatch: Any) -> None:
+    processor, completions, _ = _setup(
+        monkeypatch,
+        [_tool_calls("不是 JSON"), _tool_reply("重试成功")],
+        max_retries=1,
+    )
+
+    assert processor.mail(_mail()).body == "重试成功"
+    assert len(completions.calls) == 2
+
+
+def test_json_empty_answer_is_retried(monkeypatch: Any) -> None:
+    processor, completions, _ = _setup(
+        monkeypatch,
+        ["   ", _content("重试成功")],
+        output_mode="json",
+        max_retries=1,
+    )
+
+    assert processor.mail(_mail()).body == "重试成功"
+    assert len(completions.calls) == 2
+
+
+def test_retry_exhausted_falls_back(monkeypatch: Any) -> None:
+    processor, completions, _ = _setup(
+        monkeypatch,
+        [[], []],
+        max_retries=1,
+    )
+
+    result = processor.mail(_mail("原始正文"))
 
     assert result.body == "原始正文"
+    assert len(completions.calls) == 2
 
 
 def test_github_sets_content_per_item(monkeypatch: Any) -> None:
-    replies = [_summary_reply("摘要 A"), _summary_reply("摘要 B")]
-
-    def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
-        return FakeResponse(replies.pop(0))
-
-    monkeypatch.setattr(
-        "print_my_mail.ai.urllib.request.urlopen",
-        fake_urlopen,
+    processor, completions, _ = _setup(
+        monkeypatch,
+        [_tool_reply("摘要 A"), _tool_reply("摘要 B")],
     )
 
     digest = GitHubDigest(
@@ -259,28 +326,27 @@ def test_github_sets_content_per_item(monkeypatch: Any) -> None:
             ),
         )
     )
-    result = OpenAIPostProcessor(_config()).github(digest)
+    result = processor.github(digest)
 
     assert [item.content for item in result.items] == ["摘要 A", "摘要 B"]
     assert result.items[0].body == "正文 A"
     assert result.items[1].latest_comment_body == "评论 B"
+    assert len(completions.calls) == 2
 
 
 def test_api_error_falls_back_to_truncated_body(monkeypatch: Any) -> None:
-    def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
-        raise urllib.error.URLError("boom")
-
-    monkeypatch.setattr(
-        "print_my_mail.ai.urllib.request.urlopen",
-        fake_urlopen,
+    processor, completions, _ = _setup(
+        monkeypatch,
+        [SDKOpenAIError("boom"), SDKOpenAIError("boom")],
     )
 
-    processor = OpenAIPostProcessor(_config())
     long_body = "甲" * 200
     item = _mail(long_body)
     result = processor.mail(item)
     assert len(result.body) == 100
     assert result.body == "甲" * 100
+    # SDK 自身负责网络/限流重试；这里不额外重试业务错误。
+    assert len(completions.calls) == 1
 
     digest = GitHubDigest(
         (
@@ -295,26 +361,14 @@ def test_api_error_falls_back_to_truncated_body(monkeypatch: Any) -> None:
 
 
 def test_fallback_respects_configured_max_chars(monkeypatch: Any) -> None:
-    def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
-        raise urllib.error.URLError("boom")
-
-    monkeypatch.setattr(
-        "print_my_mail.ai.urllib.request.urlopen",
-        fake_urlopen,
+    processor, _, _ = _setup(
+        monkeypatch,
+        [SDKOpenAIError("boom")],
+        max_chars=10,
     )
 
-    processor = OpenAIPostProcessor(_config(max_chars=10))
     result = processor.mail(_mail("甲" * 200))
     assert result.body == "甲" * 10
-
-
-def test_empty_answer_falls_back(monkeypatch: Any) -> None:
-    monkeypatch.setattr(
-        "print_my_mail.ai.urllib.request.urlopen",
-        lambda request, **kwargs: FakeResponse(_reply("   ")),
-    )
-    item = _mail()
-    assert OpenAIPostProcessor(_config()).mail(item) == item
 
 
 def test_runner_uses_ai_processor_when_enabled(tmp_path: Path) -> None:

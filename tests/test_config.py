@@ -51,7 +51,8 @@ timeout = 12
 max_chars = 80
 max_input_chars = 2000
 question = "需要我处理吗？"
-json_mode = false
+output_mode = "json"
+max_retries = 4
 """,
     )
 
@@ -79,7 +80,8 @@ json_mode = false
     assert config.ai.max_chars == 80
     assert config.ai.max_input_chars == 2000
     assert config.ai.question == "需要我处理吗？"
-    assert config.ai.json_mode is False
+    assert config.ai.output_mode == "json"
+    assert config.ai.max_retries == 4
 
 
 def test_defaults(tmp_path: Path) -> None:
@@ -95,7 +97,8 @@ def test_defaults(tmp_path: Path) -> None:
     assert config.ai.enabled is False
     assert config.ai.max_chars == 100
     assert config.ai.max_input_chars == 4000
-    assert config.ai.json_mode is True
+    assert config.ai.output_mode == "tool"
+    assert config.ai.max_retries == 2
 
 
 @pytest.mark.parametrize(
@@ -125,6 +128,8 @@ def test_defaults(tmp_path: Path) -> None:
         '[ai]\nenabled = true\nbase_url = "https://x"\nquestion = ""\n',
         '[ai]\nenabled = true\nbase_url = "https://x"\nmax_chars = 0\n',
         '[ai]\nenabled = true\nbase_url = "https://x"\nmax_input_chars = -1\n',
+        '[ai]\nenabled = true\nbase_url = "https://x"\nmax_retries = -1\n',
+        '[ai]\nenabled = true\nbase_url = "https://x"\noutput_mode = "xml"\n',
         '[ai]\nenabled = true\nbase_url = "https://x"\ntimeout = 0\n',
         '[ai]\nenabled = "yes"\n',
     ],

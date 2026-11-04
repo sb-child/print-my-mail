@@ -81,6 +81,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             "[%(threadName)s] %(name)s: %(message)s"
         ),
     )
+    # openai SDK 底层 http 客户端的 DEBUG 日志只在排查网络问题时有用，
+    # 正常 -v 日志里保留我们自己的摘要日志即可。
+    for noisy in ("httpx", "httpx2", "httpcore", "httpcore2", "openai"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     log.info("命令: %s", args.command or "run")
     config_path = find_config()
     log.info("配置文件: %s", config_path or "未找到，使用默认配置")
