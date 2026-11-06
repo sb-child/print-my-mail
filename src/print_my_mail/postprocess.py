@@ -20,7 +20,9 @@
             items = []
             for item in digest.items:
                 print(item.notification.repo, item.notification.title)
-                print(item.reason, item.body, item.latest_comment_body)
+                print(item.reason, item.body)
+                for comment in item.comments:
+                    print(comment.author, comment.body)
                 items.append(replace(item, content="可选的 AI 摘要"))
             return replace(digest, items=tuple(items))
 
@@ -49,8 +51,9 @@ class PostProcessor(Protocol):
         """
         处理一批 GitHub 通知。
 
-        `digest.items` 里包含标题、原因、issue/PR 正文和最新评论正文，
-        可以给每条 item 设置 `content`，打印时会显示在对应通知下面。
+        `digest.items` 里包含标题、原因、issue/PR 正文以及完整评论列表
+        （`item.comments`，含作者和正文），可以给每条 item 设置 `content`，
+        打印时会显示在对应通知下面。
         """
         ...
 

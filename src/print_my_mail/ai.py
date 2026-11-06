@@ -42,7 +42,7 @@
   或没有调用工具时，回退到原文的前 `max_chars` 个字符；
 - `token` 不会出现在 `repr` 或日志里。
 
-启用后邮件正文、GitHub 正文和最新评论会发送到配置的接口，请确认
+启用后邮件正文、GitHub 正文以及全部评论会发送到配置的接口，请确认
 端点可信；接口使用 Bearer token 鉴权。
 
 也可以手动指定处理器::
@@ -136,10 +136,18 @@ class OpenAIPostProcessor:
         items = []
         for item in digest.items:
             notification = item.notification
-            content = {}
+            content: dict[str, Any] = {}
             if item.body.strip():
                 content["body"] = item.body
-            if item.latest_comment_body.strip():
+            if item.comments:
+                content["comments"] = [
+                    {
+                        "author": comment.author,
+                        "body": comment.body,
+                    }
+                    for comment in item.comments
+                ]
+            elif item.latest_comment_body.strip():
                 content["latest_comment"] = item.latest_comment_body
             meta = {"type": notification.kind}
             if item.reason:
@@ -153,7 +161,12 @@ class OpenAIPostProcessor:
                 title=(f"{notification.repo}#{notification.id} {notification.title}"),
                 meta=meta,
                 body=content,
-                fallback=item.body or item.latest_comment_body,
+                fallback=item.body
+                or (
+                    item.comments[-1].body
+                    if item.comments
+                    else item.latest_comment_body
+                ),
             )
             items.append(item if not answer else replace(item, content=answer))
         return replace(digest, items=tuple(items))
@@ -164,7 +177,7 @@ class OpenAIPostProcessor:
         kind: str,
         title: str,
         meta: dict[str, str],
-        body: str | dict[str, str],
+        body: str | dict[str, Any],
         fallback: str,
     ) -> str:
         prompt = _build_prompt(
@@ -305,19 +318,17 @@ def _build_prompt(
     kind: str,
     title: str,
     meta: dict[str, str],
-    body: str | dict[str, str],
+    body: str | dict[str, Any],
 ) -> str:
     """把待摘要的内容序列化成发给模型的 JSON。"""
     if isinstance(body, str):
-        content: str | dict[str, str] = (
+        content: Any = (
             _clip(body.strip(), config.max_input_chars) or "（无正文）"
         )
     else:
-        content = {
-            key: _clip(value.strip(), config.max_input_chars)
-            for key, value in body.items()
-            if value.strip()
-        } or "（无正文）"
+        content = (
+            _clip_content(body, config.max_input_chars) or "（无正文）"
+        )
 
     payload = {
         "kind": kind,
@@ -339,6 +350,27 @@ def _clip(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n……（内容已截断）"
+
+
+def _clip_content(value: Any, limit: int) -> Any:
+    """递归裁剪字符串字段，保留评论列表等嵌套结构。"""
+    if isinstance(value, str):
+        return _clip(value.strip(), limit)
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            clipped = _clip_content(item, limit)
+            if clipped not in ("", None, {}, []):
+                result[key] = clipped
+        return result
+    if isinstance(value, list):
+        result_list: list[Any] = []
+        for item in value:
+            clipped = _clip_content(item, limit)
+            if clipped not in ("", None, {}, []):
+                result_list.append(clipped)
+        return result_list
+    return value
 
 
 def _limit_answer(text: str, limit: int) -> str:

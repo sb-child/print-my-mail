@@ -61,7 +61,7 @@
 - `imap_timeout`：IMAP 超时；
 - `mail_max_age`：只打印启动前多少秒以内到达的邮件，更早的未读邮件跳过；
 - `dead_letter_file`：死信 JSONL 路径；
-- `github_fetch_content`：是否抓取 GitHub 正文和最新评论。
+- `github_fetch_content`：是否抓取 GitHub 正文和全部评论。
 
 `[[mail]]` 支持 `user`、`pass`、`host`、`port`、`folders`。
 `[[github]]` 支持 `pat`。

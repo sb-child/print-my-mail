@@ -21,7 +21,7 @@ imap_timeout = 30
 mail_max_age = 60
 # 永久失败通知的死信文件
 dead_letter_file = "dead-letter.jsonl"
-# 是否抓取 GitHub 通知正文和最新评论
+# 是否抓取 GitHub 通知正文和全部评论
 github_fetch_content = true
 
 # 监听一个IMAP邮箱

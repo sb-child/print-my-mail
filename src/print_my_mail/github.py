@@ -39,7 +39,12 @@ from urllib.parse import urlparse
 
 from .config import GitHubAccount
 from .deadletter import DeadLetterStore
-from .template import GitHubItem, GitHubKind, GitHubNotification
+from .template import (
+    GitHubComment,
+    GitHubItem,
+    GitHubKind,
+    GitHubNotification,
+)
 from .timeutil import iso_to_utc8
 
 log = logging.getLogger(__name__)
@@ -50,6 +55,8 @@ USER_AGENT = "print-my-mail"
 REQUEST_TIMEOUT = 30.0
 PAGE_SIZE = 50
 MAX_PAGES = 20
+COMMENT_PAGE_SIZE = 100
+MAX_COMMENT_PAGES = 5
 MAX_RETRIES = 3
 BASE_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 30.0
@@ -82,6 +89,8 @@ class GitHubAPI(Protocol):
     def notifications(self) -> list[dict[str, Any]]: ...
 
     def subject(self, url: str) -> GitHubSubject: ...
+
+    def comments(self, url: str) -> list[GitHubComment]: ...
 
     def mark_read(self, thread_id: str) -> None: ...
 
@@ -198,6 +207,60 @@ class GitHubClient:
     def subject_state(self, url: str) -> str | None:
         """查询 issue/PR 的 state（open/closed）。"""
         return self.subject(url).state
+
+    def comments(self, url: str) -> list[GitHubComment]:
+        """查询 issue/PR 的全部评论。
+
+        PR 会同时抓取普通讨论评论、行内 review 评论和 review 正文，
+        按时间排序并去重。非 issue/PR 资源返回空列表。
+        """
+        comments: list[GitHubComment] = []
+        for comments_url in _comment_urls(url):
+            try:
+                data_list = self._list(comments_url)
+            except GitHubError as exc:
+                log.warning("查询 GitHub 评论失败 %s: %s", comments_url, exc)
+                continue
+            for data in data_list:
+                comment = _parse_comment(data)
+                if comment is not None:
+                    comments.append(comment)
+
+        seen: set[tuple[str, str, str]] = set()
+        unique: list[GitHubComment] = []
+        for comment in comments:
+            key = (comment.author, comment.body, comment.created_at)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(comment)
+        unique.sort(key=lambda comment: comment.created_at)
+        return unique
+
+    def _list(self, url: str) -> list[dict[str, Any]]:
+        """按 Link 头分页读取一个列表接口。"""
+        items: list[dict[str, Any]] = []
+        next_url: str | None = url
+        params: dict[str, str] | None = {
+            "per_page": str(COMMENT_PAGE_SIZE),
+        }
+        for _ in range(MAX_COMMENT_PAGES):
+            if next_url is None:
+                break
+            data, headers = self._request("GET", next_url, params=params)
+            if not isinstance(data, list):
+                raise GitHubError("GitHub API 返回了非数组结果")
+            items.extend(item for item in data if isinstance(item, dict))
+            next_url = _next_link(headers)
+            params = None
+        else:
+            if next_url is not None:
+                log.warning(
+                    "GitHub 评论超过 %d 页，只保留前 %d 条",
+                    MAX_COMMENT_PAGES,
+                    len(items),
+                )
+        return items
 
     def _request(
         self,
@@ -458,8 +521,21 @@ class GitHubPoller:
         if not isinstance(latest_comment_url, str):
             latest_comment_url = ""
 
+        comments: tuple[GitHubComment, ...] = ()
+        if self.fetch_content and subject_type in ("Issue", "PullRequest") and url:
+            try:
+                comments = tuple(self._client.comments(url))
+            except GitHubError as exc:
+                log.warning("查询 GitHub 通知全部评论失败: %s", exc)
+
         latest_comment_body = ""
-        if self.fetch_content and latest_comment_url and latest_comment_url != url:
+        if comments:
+            latest_comment_body = comments[-1].body
+        elif (
+            self.fetch_content
+            and latest_comment_url
+            and latest_comment_url != url
+        ):
             try:
                 latest_comment_body = self._client.subject(
                     latest_comment_url
@@ -488,6 +564,7 @@ class GitHubPoller:
             latest_comment_url=latest_comment_url,
             body=subject_info.body,
             latest_comment_body=latest_comment_body,
+            comments=comments,
         )
 
 
@@ -537,6 +614,43 @@ def _decode_body(body: bytes) -> Any:
         return json.loads(body)
     except json.JSONDecodeError as exc:
         raise GitHubError("GitHub API 返回了无效的 JSON") from exc
+
+
+def _comment_urls(url: str) -> tuple[str, ...]:
+    """列出需要抓取的评论接口。
+
+    PR 的普通讨论评论在 `/issues/{n}/comments`，行内 review 评论在
+    `/pulls/{n}/comments`，review 正文在 `/pulls/{n}/reviews`。
+    """
+    url = url.rstrip("/")
+    if "/pulls/" in url:
+        issue_url = url.replace("/pulls/", "/issues/", 1)
+        return (
+            f"{issue_url}/comments",
+            f"{url}/comments",
+            f"{url}/reviews",
+        )
+    if "/issues/" in url:
+        return (f"{url}/comments",)
+    return ()
+
+
+def _parse_comment(data: dict[str, Any]) -> GitHubComment | None:
+    user = data.get("user")
+    author = user.get("login") if isinstance(user, dict) else None
+    body = data.get("body")
+    if not isinstance(body, str) or not body.strip():
+        return None
+    created_at = data.get("created_at")
+    if not isinstance(created_at, str):
+        created_at = data.get("submitted_at")
+    return GitHubComment(
+        author=author if isinstance(author, str) and author else "unknown",
+        body=body,
+        created_at=(
+            iso_to_utc8(created_at) if isinstance(created_at, str) else ""
+        ),
+    )
 
 
 def _next_link(headers: Any) -> str | None:

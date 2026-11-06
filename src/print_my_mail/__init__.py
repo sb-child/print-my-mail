@@ -27,6 +27,7 @@ from .postprocess import PostProcessor, TransparentPostProcessor
 from .runner import Runner, run, run_once
 from .sample import print_test_page
 from .template import (
+    GitHubComment,
     GitHubItem,
     GitHubKind,
     GitHubNotification,
@@ -39,6 +40,7 @@ __all__ = [
     "Config",
     "DEFAULT_TARGET",
     "GitHubAccount",
+    "GitHubComment",
     "GitHubDigest",
     "GitHubItem",
     "GitHubKind",

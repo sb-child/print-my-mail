@@ -28,8 +28,10 @@
     )
 
 `GitHubItem` 的上下文字段：`reason`、`updated_at`、`url`、
-`latest_comment_url`、`body`、`latest_comment_body`、`content`。
-`content` 默认空，通常由 `PostProcessor` 填写后打印在通知下面。
+`latest_comment_url`、`body`、`latest_comment_body`、`comments`、`content`。
+`comments` 是完整的评论列表（作者 + 正文），通常由 GitHub 抓取后交给
+`PostProcessor` 作为上下文；`content` 默认空，通常由 `PostProcessor`
+填写后打印在通知下面。
 """
 
 from __future__ import annotations
@@ -94,6 +96,15 @@ class GitHubNotification:
 
 
 @dataclass(frozen=True)
+class GitHubComment:
+    """一条 GitHub 评论及其作者。"""
+
+    author: str
+    body: str = ""
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
 class GitHubItem:
     """一条 GitHub 通知及打印/后处理上下文。
 
@@ -106,6 +117,7 @@ class GitHubItem:
     - `latest_comment_url`：最新评论的 API 地址；
     - `body`：Issue / PR / Release 等资源正文；
     - `latest_comment_body`：最新评论正文；
+    - `comments`：完整的评论列表，包含作者、正文和 UTC+8 时间；
     - `content`：打印在通知下面的文本，默认空，通常由后处理器填写。
     """
 
@@ -116,6 +128,7 @@ class GitHubItem:
     latest_comment_url: str = ""
     body: str = ""
     latest_comment_body: str = ""
+    comments: tuple[GitHubComment, ...] = ()
     content: str = ""
 
 

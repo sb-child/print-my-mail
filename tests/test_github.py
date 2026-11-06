@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from print_my_mail import GitHubComment
 from print_my_mail.config import GitHubAccount
 from print_my_mail.deadletter import DeadLetterStore
 from print_my_mail.github import (
@@ -26,6 +27,7 @@ class FakeClient:
         self.marked: list[str] = []
         self.fail_mark: set[str] = set()
         self.subjects: dict[str, GitHubSubject] = {}
+        self.comments_map: dict[str, list[GitHubComment]] = {}
         self.poll_interval = 60.0
 
     def notifications(self) -> list[dict[str, object]]:
@@ -33,6 +35,9 @@ class FakeClient:
 
     def subject(self, url: str) -> GitHubSubject:
         return self.subjects.get(url, GitHubSubject(state="open", body="正文"))
+
+    def comments(self, url: str) -> list[GitHubComment]:
+        return self.comments_map.get(url, [])
 
     def mark_read(self, thread_id: str) -> None:
         if thread_id in self.fail_mark:
@@ -104,6 +109,10 @@ def test_item_carries_content_for_postprocessor() -> None:
     comment_url = "https://api.github.com/repos/a/b/issues/comments/9"
     client.subjects[issue_url] = GitHubSubject(state="closed", body="issue body")
     client.subjects[comment_url] = GitHubSubject(body="latest comment")
+    client.comments_map[issue_url] = [
+        GitHubComment("alice", "first comment", "2026-11-02T10:00:00+08:00"),
+        GitHubComment("bob", "latest comment", "2026-11-02T12:00:00+08:00"),
+    ]
     poller = GitHubPoller(GitHubAccount("pat"), client=client)
     thread = {
         "id": "123",
@@ -124,6 +133,11 @@ def test_item_carries_content_for_postprocessor() -> None:
     assert item.updated_at == "2026-11-02T18:00:00+08:00"
     assert item.body == "issue body"
     assert item.latest_comment_body == "latest comment"
+    assert [comment.author for comment in item.comments] == ["alice", "bob"]
+    assert [comment.body for comment in item.comments] == [
+        "first comment",
+        "latest comment",
+    ]
 
 
 def test_release_label_and_commit_label() -> None:
@@ -218,6 +232,7 @@ def test_fetch_content_disabled() -> None:
     assert item.notification.kind == "closed-issue"
     assert item.body == ""
     assert item.latest_comment_body == ""
+    assert item.comments == ()
 
 
 def test_invalid_thread_is_dead_lettered_and_marked_read(tmp_path: Path) -> None:
@@ -317,6 +332,34 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(500, {"message": "boom"})
             else:
                 self._send(200, {"ok": True})
+        elif self.path.startswith("/repos/a/b/issues/1/comments?page=2"):
+            self._send(
+                200,
+                [
+                    {
+                        "user": {"login": "bob"},
+                        "body": "second",
+                        "created_at": "2026-11-02T11:00:00Z",
+                    }
+                ],
+            )
+        elif self.path.startswith("/repos/a/b/issues/1/comments"):
+            self._send(
+                200,
+                [
+                    {
+                        "user": {"login": "alice"},
+                        "body": "first",
+                        "created_at": "2026-11-02T10:00:00Z",
+                    }
+                ],
+                {
+                    "Link": (
+                        f"<http://127.0.0.1:{port}/repos/a/b/issues/1/"
+                        'comments?page=2>; rel="next"'
+                    ),
+                },
+            )
         else:
             self._send(404, {})
 
@@ -337,6 +380,71 @@ def test_pagination_and_poll_interval(api_url: str) -> None:
     client = GitHubClient("pat", api_url=api_url, sleep=lambda _: None)
     assert client.notifications() == [{"id": "1"}, {"id": "2"}]
     assert client.poll_interval == 90
+
+
+def test_pr_comments_merge_discussion_reviews_and_dedup() -> None:
+    pr_url = "https://api.github.com/repos/a/b/pulls/7"
+    issue_comments = pr_url.replace("/pulls/", "/issues/") + "/comments"
+    review_comments = pr_url + "/comments"
+    reviews = pr_url + "/reviews"
+
+    class Client(GitHubClient):
+        def _list(self, url: str) -> list[dict[str, object]]:
+            pages: dict[str, list[dict[str, object]]] = {
+                issue_comments: [
+                    {
+                        "user": {"login": "alice"},
+                        "body": "discussion",
+                        "created_at": "2026-11-02T10:00:00Z",
+                    }
+                ],
+                review_comments: [
+                    {
+                        "user": {"login": "bob"},
+                        "body": "inline",
+                        "created_at": "2026-11-02T11:00:00Z",
+                    }
+                ],
+                reviews: [
+                    {
+                        "user": {"login": "carol"},
+                        "body": "review",
+                        "submitted_at": "2026-11-02T12:00:00Z",
+                    },
+                    {
+                        "user": {"login": "dave"},
+                        "body": "   ",
+                        "submitted_at": "2026-11-02T13:00:00Z",
+                    },
+                    {
+                        "user": {"login": "alice"},
+                        "body": "discussion",
+                        "created_at": "2026-11-02T10:00:00Z",
+                    },
+                ],
+            }
+            return pages.get(url, [])
+
+    comments = Client("pat").comments(pr_url)
+
+    assert [(comment.author, comment.body) for comment in comments] == [
+        ("alice", "discussion"),
+        ("bob", "inline"),
+        ("carol", "review"),
+    ]
+
+
+def test_comments_pagination_and_author(api_url: str) -> None:
+    client = GitHubClient("pat", api_url=api_url, sleep=lambda _: None)
+    comments = client.comments(f"{api_url}/repos/a/b/issues/1")
+
+    assert [(comment.author, comment.body) for comment in comments] == [
+        ("alice", "first"),
+        ("bob", "second"),
+    ]
+    assert all(
+        comment.created_at.endswith("+08:00") for comment in comments
+    )
 
 
 def test_retry(api_url: str) -> None:

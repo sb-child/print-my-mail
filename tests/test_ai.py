@@ -12,6 +12,7 @@ from openai import OpenAIError as SDKOpenAIError
 from print_my_mail import (
     AIConfig,
     Config,
+    GitHubComment,
     GitHubDigest,
     GitHubItem,
     GitHubNotification,
@@ -322,7 +323,12 @@ def test_github_sets_content_per_item(monkeypatch: Any) -> None:
             ),
             GitHubItem(
                 GitHubNotification("owner/repo", 2, "标题 B", "pr"),
+                body="正文 B",
                 latest_comment_body="评论 B",
+                comments=(
+                    GitHubComment("alice", "第一条评论"),
+                    GitHubComment("bob", "评论 B"),
+                ),
             ),
         )
     )
@@ -332,6 +338,14 @@ def test_github_sets_content_per_item(monkeypatch: Any) -> None:
     assert result.items[0].body == "正文 A"
     assert result.items[1].latest_comment_body == "评论 B"
     assert len(completions.calls) == 2
+
+    prompt = json.loads(completions.calls[1]["messages"][1]["content"])
+    assert prompt["content"]["body"] == "正文 B"
+    assert prompt["content"]["comments"] == [
+        {"author": "alice", "body": "第一条评论"},
+        {"author": "bob", "body": "评论 B"},
+    ]
+    assert "latest_comment" not in prompt["content"]
 
 
 def test_api_error_falls_back_to_truncated_body(monkeypatch: Any) -> None:
